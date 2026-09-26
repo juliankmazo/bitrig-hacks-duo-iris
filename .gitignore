@@ -1,0 +1,7 @@
+build/
+DerivedData/
+.DS_Store
+xcuserdata/
+.env
+__pycache__/
+*.task

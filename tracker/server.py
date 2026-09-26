@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12,<3.13"
+# dependencies = ["mediapipe==0.10.21", "opencv-python>=4.9", "numpy>=1.26,<2", "websockets>=12"]
+# ///
 """Iris eye tracker: webcam -> MediaPipe FaceLandmarker -> gaze point/zone -> WebSocket.
 
     uv run --python 3.12 tracker/server.py                 # camera + tracking

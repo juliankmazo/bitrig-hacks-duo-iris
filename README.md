@@ -68,8 +68,8 @@ Verified on this Mac (2026-09-26):
 - Webcam gaze is decent left/right and weak up/down (eyelids cover the iris). Hence `--mode hybrid` (eyes + head). If it jitters, `--mode head` (nose pointer) is a legitimate fallback that real AAC devices ship.
 
 Tasks:
-- [ ] WebSocket server on :8765 that streams gaze and handles `cal` / `cal_reset` / `caption`, and serves `outer.html` on :8766
-- [ ] Run with the camera and confirm gaze messages stream (quick Python ws client)
+- [x] WebSocket server on :8765 that streams gaze and handles `cal` / `cal_reset` / `caption`, and serves `outer.html` on :8766
+- [x] Run with the camera and confirm gaze messages stream (quick Python ws client)
 - [ ] Calibration: 9 cells, nearest-centroid classification; test by looking at the 9 regions of the simulator window
 - [ ] Tune smoothing (EMA 0.4, 3-frame hysteresis), hybrid vs head, and feature weights; target: can hold each of the 9 zones for 1 s
 - [ ] Blink select: both eyes closed > 0.45 s, no false fires from natural blinks

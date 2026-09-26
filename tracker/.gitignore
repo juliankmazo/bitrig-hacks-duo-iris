@@ -1,0 +1,6 @@
+.venv/
+uv.lock
+calibration.json
+test_results.jsonl
+*.task
+__pycache__/

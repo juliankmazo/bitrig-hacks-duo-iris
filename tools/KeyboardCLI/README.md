@@ -50,6 +50,8 @@ Exact letters are sent to the model as requested constraints; the debug UI curre
 
 ## OpenAI
 
+The Swift CLI and IrisGaze share the prediction implementation in `../../packages/KeyboardCore`.
+
 API calls use the community-maintained [MacPaw OpenAI Swift SDK](https://github.com/MacPaw/OpenAI), pinned to 0.5.1 with transitive versions in `Package.resolved`. The SDK handles Responses API requests, authentication, cancellation, and response decoding. Logging middleware records actual request/response bodies without authentication headers. The grid still uses GPT-6 Luna and parallel requests.
 
 The CLI reads `OPENAI_API_KEY` and optional `OPENAI_MODEL` from the git-ignored `.env` in the current directory. Environment variables override the file. `--ask-key` optionally prompts for a temporary key without echo. `--model MODEL` overrides the default GPT-6 Luna. Luna uses `reasoning.effort: low` with no explicit output-token limit (the API default applies). The prompt explicitly specifies English.

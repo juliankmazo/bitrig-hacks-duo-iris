@@ -65,13 +65,13 @@ struct StatusPill: View {
 
     var body: some View {
         let s = model.source.sample
+        ScrollView(.horizontal) {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
                 Button(model.backend.title, systemImage: "arrow.triangle.2.circlepath.camera") { model.cycleBackend() }
                     .buttonStyle(.bordered)
                     .tint(Theme.glow)
                     .labelStyle(.titleAndIcon)
-                    .fixedSize()
                 indicator("face", on: s.faceDetected, color: .green)
                 indicator("blink", on: s.blink, color: .yellow)
                 Text("cal \(model.calibrator.calibratedCount)/12")
@@ -105,18 +105,23 @@ struct StatusPill: View {
                            isOn: Binding(get: { model.simulated.tourEnabled }, set: { model.simulated.tourEnabled = $0 }))
                         .toggleStyle(.button)
                 }
+                Button("Retry AI") { model.retryPredictions() }
+                Text(model.predictionStatus).foregroundStyle(Theme.muted)
                 Button("Clear", systemImage: "trash") { model.clearLog() }
             }
             .buttonStyle(.bordered)
             .labelStyle(.titleOnly)
             .font(.caption)
         }
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: 64)
         .controlSize(.small)
         .lineLimit(1)
-        .fixedSize()
+        .frame(maxWidth: .infinity)
         .foregroundStyle(Theme.text)
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
         .background(Theme.panel, in: .capsule)
         .overlay(Capsule().strokeBorder(Theme.cellBorder))
     }

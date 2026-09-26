@@ -1,4 +1,5 @@
-"""Numerical self-test of the app's calibration regression (a numpy port of GazeRegression.swift).
+"""Numerical self-test of the first (linear, fixed-lambda) calibration regression.
+The current app model (spec + lambda chosen by leave-one-cell-out, head floors) is ported in replay.py.
 
 uv run --python 3.12 fit_check.py
 

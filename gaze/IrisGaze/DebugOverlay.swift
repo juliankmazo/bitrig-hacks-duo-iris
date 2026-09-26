@@ -10,10 +10,11 @@ struct DebugOverlay: View {
     var body: some View {
         let size = layout.size
         let centers = layout.normalizedCenters
-        let projected = model.calibrator.projectedMedians
+        let projected = model.calibrator.projected
         ZStack(alignment: .topLeading) {
             Canvas { ctx, _ in
-                for (p, t) in zip(projected, centers) {
+                for (p, cell) in projected {
+                    guard let t = centers[safe: cell] else { continue }
                     let a = CGPoint(x: t.x * size.width, y: t.y * size.height)
                     let b = CGPoint(x: p.x * size.width, y: p.y * size.height)
                     var line = Path()
@@ -28,6 +29,25 @@ struct DebugOverlay: View {
                 }
             }
             .allowsHitTesting(false)
+
+            // Per-cell validation accuracy.
+            ForEach(Array(model.validationPerCell.keys), id: \.self) { k in
+                if let frame = layout.cells[safe: k], let acc = model.validationPerCell[k] {
+                    Text("\(Int(acc * 100))%")
+                        .font(.caption.monospacedDigit().bold())
+                        .foregroundStyle(acc >= 0.8 ? .green : acc >= 0.5 ? .yellow : .red)
+                        .padding(.horizontal, 5)
+                        .background(.black.opacity(0.5), in: .capsule)
+                        .position(x: frame.maxX - 24, y: frame.maxY - 14)
+                }
+            }
+
+            if let name = model.recordingName, let last = layout.cells.last {
+                Text("rec: Documents/\(name) · model \(model.calibrator.modelDescription) · implicit \(model.calibrator.implicitRows.count)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Theme.muted)
+                    .position(x: layout.size.width / 2, y: last.maxY + 10)
+            }
 
             if let p = model.calibrator.smoothed {
                 Circle()
@@ -63,7 +83,7 @@ struct CalibrationTarget: View {
                 .frame(width: d * 0.62, height: d * 0.62)
             Circle()
                 .trim(from: 0, to: phase == .settle ? 1 - progress : progress)
-                .stroke(phase == .sampling ? Color.green : Theme.look,
+                .stroke(phase == .sampling ? Color.green : phase == .validating ? Theme.glow : Theme.look,
                         style: StrokeStyle(lineWidth: 7, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .frame(width: d * 0.62, height: d * 0.62)

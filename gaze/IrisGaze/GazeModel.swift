@@ -60,7 +60,13 @@ final class GazeModel {
     private(set) var calibratingZone: Int?
     private(set) var calibrationProgress: Double = 0
     private(set) var isCalibrating = false
-    enum CalibrationPhase { case settle, sampling }
+    enum CalibrationPhase { case settle, sampling, validating }
+    private(set) var isValidating = false
+    private(set) var validationAccuracy: Double?
+    private(set) var validationPerCell: [Int: Double] = [:]
+    private(set) var recordingName: String?
+    @ObservationIgnored private var recorder: SessionRecorder?
+    @ObservationIgnored private var recentFeatures: [[Double]] = []
     private(set) var calibrationPhase: CalibrationPhase?
     private(set) var calibrationMessage: String?
     /// Debug overlay: live predicted point + the 12 calibration medians projected through the fit.
@@ -176,7 +182,14 @@ final class GazeModel {
     private func tick() {
         let s = source.sample
         let now = Date.now
-        if s != lastSample { sampleCount += 1; lastSample = s }
+        if s != lastSample {
+            sampleCount += 1
+            lastSample = s
+            if !s.blink, let f = s.featureVector {
+                recentFeatures.append(f)
+                if recentFeatures.count > 15 { recentFeatures.removeFirst() }
+            }
+        }
         if now.timeIntervalSince(fpsWindowStart) >= 1 {
             fps = sampleCount
             sampleCount = 0
@@ -202,6 +215,10 @@ final class GazeModel {
         dwellProgress = min(1, now.timeIntervalSince(dwellStart) / Self.dwellDuration)
         if dwellProgress >= 1 {
             select(z)
+            // Implicit recalibration: the dwell is a labelled sample (median of the last ~0.5 s).
+            if let layout, let f = Self.median(recentFeatures) {
+                calibrator.addImplicit(cell: z, features: f, layout: layout)
+            }
             cooldownUntil = now.addingTimeInterval(Self.cooldown)
             dwellZone = nil
             dwellProgress = 0
@@ -226,18 +243,32 @@ final class GazeModel {
         selected = nil
     }
 
+    static func median(_ rows: [[Double]]) -> [Double]? {
+        guard let d = rows.first?.count, rows.allSatisfy({ $0.count == d }) else { return nil }
+        return (0..<d).map { j in
+            let v = rows.map { $0[j] }.sorted()
+            return v[v.count / 2]
+        }
+    }
+
     // MARK: Calibration
 
     /// Snake order: consecutive targets are neighbours.
     static let calibrationOrder = [0, 1, 2, 3, 7, 6, 5, 4, 8, 9, 10, 11]
+    /// Validation visits the cells in a different order.
+    static let validationOrder = [5, 10, 3, 8, 1, 6, 11, 0, 9, 2, 7, 4]
     static let settleSeconds: TimeInterval = 1.0
     static let sampleSeconds: TimeInterval = 1.5
+    static let validationSettleSeconds: TimeInterval = 0.8
     static let maxRetries = 2
+
+    /// `-calPasses 2` runs the 12 cells twice (24 rows in the fit).
+    var calPasses = max(1, min(2, UserDefaults.standard.integer(forKey: "calPasses")))
 
     /// Max per-feature std during a fixation before the cell is re-asked.
     private var spreadLimits: [Double] {
         switch backend {
-        case .mac: [0.025, 0.045, 0.04, 0.04, .infinity]  // eye_x, eye_y, yaw, pitch, roll
+        case .mac: [0.025, 0.045, 0.04, 0.04, .infinity, 0.035, 0.06, 0.035, 0.06]
         default: [0.04, 0.04]
         }
     }
@@ -247,34 +278,111 @@ final class GazeModel {
         calibrator.clear()
         isCalibrating = true
         showDebug = false
+        validationAccuracy = nil
+        validationPerCell = [:]
         screen = .calibration
+        recorder?.close()
+        recorder = SessionRecorder()
+        if let recorder {
+            recordingName = recorder.url.lastPathComponent
+            Self.logger.notice("recording \(recorder.url.path(), privacy: .public)")
+            if let layout {
+                recorder.write([
+                    "type": "session", "backend": backend.rawValue, "passes": calPasses,
+                    "size": [layout.size.width, layout.size.height],
+                    "cells": layout.cells.map { [$0.minX / layout.size.width, $0.minY / layout.size.height,
+                                                 $0.width / layout.size.width, $0.height / layout.size.height] },
+                ])
+            }
+        }
         calibrationTask = Task { [weak self] in
             guard let self else { return }
-            for k in Self.calibrationOrder {
-                var attempt = 0
-                while !Task.isCancelled {
-                    self.calibratingZone = k
-                    self.simulated.pinnedTourTarget = self.layout?.normalizedCenters[safe: k]
-                    let result = await self.collect(zone: k)
-                    if Task.isCancelled { return }
-                    if let median = result.median, (result.ok || attempt >= Self.maxRetries) {
-                        self.calibrator.setMedian(zone: k, median)
-                        Self.logger.notice("cal zone \(k) n=\(result.count) ok=\(result.ok) median=\(median.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public) std=\(result.std.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public)")
-                        break
+            for pass in 0..<self.calPasses {
+                for k in Self.calibrationOrder {
+                    var attempt = 0
+                    while !Task.isCancelled {
+                        self.calibratingZone = k
+                        self.simulated.pinnedTourTarget = self.layout?.normalizedCenters[safe: k]
+                        let result = await self.collect(zone: k, pass: pass)
+                        if Task.isCancelled { return }
+                        if let median = result.median, (result.ok || attempt >= Self.maxRetries) {
+                            self.calibrator.addMedian(cell: k, pass: pass, median)
+                            Self.logger.notice("cal pass \(pass) zone \(k) n=\(result.count) ok=\(result.ok) median=\(median.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public) std=\(result.std.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public)")
+                            self.recorder?.write(["type": "median", "cell": k, "pass": pass, "f": median,
+                                                  "std": result.std, "ok": result.ok])
+                            break
+                        }
+                        attempt += 1
+                        if attempt > 5 {   // no usable data at all: skip this cell, fit with the rest
+                            Self.logger.notice("cal zone \(k) skipped")
+                            break
+                        }
+                        self.calibrationMessage = result.reason
+                        Self.logger.notice("cal zone \(k) rejected: \(result.reason, privacy: .public)")
+                        try? await Task.sleep(for: .milliseconds(700))
                     }
-                    attempt += 1
-                    if attempt > 5 {   // no usable data at all: skip this cell, fit with the rest
-                        Self.logger.notice("cal zone \(k) skipped")
-                        break
-                    }
-                    self.calibrationMessage = result.reason
-                    Self.logger.notice("cal zone \(k) rejected: \(result.reason, privacy: .public)")
-                    try? await Task.sleep(for: .milliseconds(700))
                 }
             }
-            if let layout = self.layout { self.calibrator.fit(layout: layout) }
+            guard let layout = self.layout else { return self.finishCalibration() }
+            self.calibrator.fit(layout: layout)
+            self.recorder?.write(["type": "fit", "model": self.calibrator.modelDescription,
+                                  "calErr": self.calibrator.residualPoints ?? -1, "cv": self.calibrator.cvPoints ?? -1])
+            if self.calibrator.isCalibrated {
+                await self.validate(layout: layout)
+            }
             self.finishCalibration()
             self.showDebug = true   // show the fit right away so the error is visible
+        }
+    }
+
+    /// Validate: the same 12 cells in another order, 0.8 s settle + 1.5 s scored, no fitting.
+    private func validate(layout: GridLayout) async {
+        isValidating = true
+        defer { isValidating = false }
+        var hits = 0, total = 0
+        var perCell: [Int: Double] = [:]
+        for k in Self.validationOrder {
+            guard !Task.isCancelled else { return }
+            calibratingZone = k
+            simulated.pinnedTourTarget = layout.normalizedCenters[safe: k]
+            calibrationPhase = .settle
+            await pump(seconds: Self.validationSettleSeconds, phase: "vsettle", cell: k, pass: -1) { _ in }
+            calibrationPhase = .validating
+            var cellHits = 0, cellTotal = 0
+            await pump(seconds: Self.sampleSeconds, phase: "validate", cell: k, pass: -1) { s in
+                guard s.faceDetected, !s.blink, let p = self.calibrator.predict(s, layout: layout) else { return }
+                cellTotal += 1
+                if layout.zone(forNormalized: p) == k { cellHits += 1 }
+            }
+            hits += cellHits
+            total += cellTotal
+            perCell[k] = cellTotal > 0 ? Double(cellHits) / Double(cellTotal) : 0
+        }
+        calibrationPhase = nil
+        validationAccuracy = total > 0 ? Double(hits) / Double(total) : 0
+        validationPerCell = perCell
+        let per = perCell.keys.sorted().map { "\($0):\(Int((perCell[$0] ?? 0) * 100))" }.joined(separator: " ")
+        Self.logger.notice("validation \(Int((self.validationAccuracy ?? 0) * 100))% (\(hits)/\(total)) per cell \(per, privacy: .public)")
+        recorder?.write(["type": "validation", "accuracy": validationAccuracy ?? 0, "hits": hits, "total": total,
+                         "perCell": Dictionary(uniqueKeysWithValues: perCell.map { (String($0.key), $0.value) })])
+    }
+
+    /// Poll the source for `seconds`, recording every new frame and passing it to `handle`.
+    private func pump(seconds: TimeInterval, phase: String, cell: Int, pass: Int,
+                      handle: (GazeSample) -> Void) async {
+        var last: GazeSample?
+        let start = Date.now
+        while Date.now.timeIntervalSince(start) < seconds, !Task.isCancelled {
+            let s = source.sample
+            if s != last {
+                last = s
+                recorder?.write(["type": "frame", "t": Date.now.timeIntervalSince1970, "phase": phase, "cell": cell,
+                                 "pass": pass, "face": s.faceDetected, "blink": s.blink,
+                                 "f": s.featureVector.map { $0 as Any } ?? NSNull()])
+                handle(s)
+            }
+            calibrationProgress = Date.now.timeIntervalSince(start) / seconds
+            try? await Task.sleep(for: .milliseconds(12))
         }
     }
 
@@ -287,45 +395,28 @@ final class GazeModel {
     }
 
     /// Settle, then sample; median per feature; flag large spread or lost face.
-    private func collect(zone k: Int) async -> Collection {
+    private func collect(zone k: Int, pass: Int) async -> Collection {
         calibrationPhase = .settle
-        let settleStart = Date.now
-        while Date.now.timeIntervalSince(settleStart) < Self.settleSeconds, !Task.isCancelled {
-            calibrationProgress = Date.now.timeIntervalSince(settleStart) / Self.settleSeconds
-            try? await Task.sleep(for: .milliseconds(30))
-        }
+        await pump(seconds: Self.settleSeconds, phase: "settle", cell: k, pass: pass) { _ in }
         calibrationMessage = nil
         calibrationPhase = .sampling
         var samples: [[Double]] = []
         var frames = 0, lost = 0
-        var last: GazeSample?
-        let start = Date.now
-        while Date.now.timeIntervalSince(start) < Self.sampleSeconds, !Task.isCancelled {
-            let s = source.sample
-            if s != last {
-                last = s
-                frames += 1
-                if !s.faceDetected { lost += 1 }
-                else if !s.blink, let f = s.featureVector { samples.append(f) }
-            }
-            calibrationProgress = Date.now.timeIntervalSince(start) / Self.sampleSeconds
-            try? await Task.sleep(for: .milliseconds(15))
+        await pump(seconds: Self.sampleSeconds, phase: "sample", cell: k, pass: pass) { s in
+            frames += 1
+            if !s.faceDetected { lost += 1 }
+            else if !s.blink, let f = s.featureVector { samples.append(f) }
         }
         calibrationPhase = nil
-        guard samples.count >= 8, let d = samples.first?.count else {
+        guard samples.count >= 8, let median = Self.median(samples), let d = samples.first?.count else {
             return Collection(count: samples.count, reason: "Face lost — look at the cell again")
-        }
-        let median = (0..<d).map { j -> Double in
-            let v = samples.map { $0[j] }.sorted()
-            return v[v.count / 2]
         }
         let std = (0..<d).map { j -> Double in
             let v = samples.map { $0[j] }
             let m = v.reduce(0, +) / Double(v.count)
             return (v.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(v.count)).squareRoot()
         }
-        let limits = spreadLimits
-        let shaky = zip(std, limits).contains { $0 > $1 }
+        let shaky = zip(std, spreadLimits).contains { $0 > $1 }
         let lostTooMuch = frames > 0 && Double(lost) / Double(frames) > 0.3
         var c = Collection(median: median, std: std, count: samples.count, ok: !shaky && !lostTooMuch)
         c.reason = lostTooMuch ? "Face lost — look at the cell again" : "Too shaky — hold your gaze steady"
@@ -343,9 +434,12 @@ final class GazeModel {
         }
     }
 
+    /// Clears the calibration medians and the implicit (dwell) samples.
     func resetCalibration() {
         calibrationTask?.cancel()
         calibrator.clear()
+        validationAccuracy = nil
+        validationPerCell = [:]
         showDebug = false
         finishCalibration()
     }
@@ -354,11 +448,14 @@ final class GazeModel {
 
     private func finishCalibration() {
         isCalibrating = false
+        isValidating = false
         calibratingZone = nil
         calibrationProgress = 0
         calibrationPhase = nil
         calibrationMessage = nil
         simulated.pinnedTourTarget = nil
+        recorder?.close()
+        recorder = nil
         screen = .grid
     }
 

@@ -21,7 +21,7 @@ struct GridView: View {
                         isTarget: isTarget,
                         progress: isTarget ? model.calibrationProgress : (isGazed ? model.dwellProgress : 0),
                         isFlashing: model.flashZone == cell.id,
-                        isCalibrated: model.calibrator.medians[cell.id] != nil
+                        isCalibrated: model.calibrator.calibratedCells.contains(cell.id)
                     )
                     .frame(width: frame.width, height: frame.height)
                     .offset(x: frame.minX, y: frame.minY)

@@ -3,10 +3,11 @@
 Run from gaze/mac:  uv run --python 3.12 gaze_server.py [--show] [--camera 0] [--port 8777]
 
 Message (one per camera frame, ~30 Hz):
-  {"type":"gaze","f":[eye_x, eye_y, yaw, pitch, roll] | null, "x":f, "y":f,
+  {"type":"gaze","f":[eye_x, eye_y, yaw, pitch, roll] | null, "fl":[x, y], "fr":[x, y], "x":f, "y":f,
    "face":b, "blink":b, "ear":f, "seq":n}
 - eye_x: iris centre along the eye-corner axis, 0 = image-left corner, 1 = image-right corner (avg both eyes)
 - eye_y: iris centre between the lids, 0 = upper lid, 1 = lower lid (avg both eyes)
+- fl / fr: the same iris x/y for the subject's left / right eye separately
 - yaw/pitch/roll: head rotation (rad) from the facial transformation matrix
 - f is null while the face is lost or the eyes are closed (no stale points during blinks).
 x/y are kept for older app builds (roughly -1..1). The app fits a regression at calibration.
@@ -54,8 +55,9 @@ def _ratio(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
     return 0.5 if d < 1e-9 else float(((p - a) @ ab) / d)
 
 
-def eye_features(pts: np.ndarray) -> tuple[float, float, float]:
-    """pts: (478, 2) in pixels. Returns eye_x, eye_y, ear (both eyes averaged)."""
+def eye_features(pts: np.ndarray) -> tuple[float, float, float, tuple[float, float], tuple[float, float]]:
+    """pts: (478, 2) in pixels. Returns eye_x, eye_y, ear (both eyes averaged), then per-eye (x, y) for the
+    subject's left eye (image-right, B) and right eye (image-left, A)."""
     ia = pts[list(A_IRIS)].mean(axis=0)
     ib = pts[list(B_IRIS)].mean(axis=0)
     # Horizontal: both measured image-left -> image-right, so they move together.
@@ -65,7 +67,8 @@ def eye_features(pts: np.ndarray) -> tuple[float, float, float]:
     vy_b = _ratio(ib, pts[B_UPPER], pts[B_LOWER])
     ear_a = np.linalg.norm(pts[A_UPPER] - pts[A_LOWER]) / (np.linalg.norm(pts[A_OUTER] - pts[A_INNER]) + 1e-6)
     ear_b = np.linalg.norm(pts[B_UPPER] - pts[B_LOWER]) / (np.linalg.norm(pts[B_OUTER] - pts[B_INNER]) + 1e-6)
-    return (hx_a + hx_b) / 2, (vy_a + vy_b) / 2, float(ear_a + ear_b) / 2
+    return ((hx_a + hx_b) / 2, (vy_a + vy_b) / 2, float(ear_a + ear_b) / 2,
+            (hx_b, vy_b), (hx_a, vy_a))
 
 
 def head_angles(matrix: np.ndarray) -> tuple[float, float, float]:
@@ -134,13 +137,13 @@ def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event)
         if face:
             faces += 1
             pts = np.array([(lm.x * w0, lm.y * h0) for lm in res.face_landmarks[0]], dtype=np.float64)
-            ex, ey, ear = eye_features(pts)
+            ex, ey, ear, (lx, ly), (rx, ry) = eye_features(pts)
             blend = {c.category_name: c.score for c in res.face_blendshapes[0]} if res.face_blendshapes else {}
             blink = ear < EAR_BLINK or (blend.get("eyeBlinkLeft", 0) > 0.5 and blend.get("eyeBlinkRight", 0) > 0.5)
             yaw = pitch = roll = 0.0
             if res.facial_transformation_matrixes:
                 yaw, pitch, roll = head_angles(np.array(res.facial_transformation_matrixes[0]))
-            raw = np.array([ex, ey, yaw, pitch, roll])
+            raw = np.array([ex, ey, yaw, pitch, roll, lx, ly, rx, ry])
             if not stats_done:
                 ears.append(ear)
             if blink:
@@ -157,7 +160,9 @@ def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event)
             shared.seq += 1
             shared.msg = {
                 "type": "gaze",
-                "f": [round(float(v), 5) for v in feat] if feat is not None else None,
+                "f": [round(float(v), 5) for v in feat[:5]] if feat is not None else None,
+                "fl": [round(float(v), 5) for v in feat[5:7]] if feat is not None else None,
+                "fr": [round(float(v), 5) for v in feat[7:9]] if feat is not None else None,
                 # backward compat: roughly -1..1
                 "x": round(float((feat[0] - 0.5) * 4 - feat[2] * 2) if feat is not None else 0.0, 4),
                 "y": round(float((feat[1] - 0.5) * 4 - feat[3] * 3) if feat is not None else 0.0, 4),

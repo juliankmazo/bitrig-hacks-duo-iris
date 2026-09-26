@@ -11,6 +11,19 @@ struct GridView: View {
             if let fold = layout.fold {
                 FoldBand(rect: fold, simulated: layout.isSimulatedFold)
             }
+            // Separate row / column feedback: nodding picks the row, the eyes pick the column.
+            if calibrationTarget == nil, !model.needsCalibration, let z = model.zone, layout.cells.count == 12 {
+                let row = (0..<4).map { layout.cells[(z / 4) * 4 + $0] }.reduce(CGRect.null) { $0.union($1) }
+                let col = (0..<3).map { layout.cells[$0 * 4 + z % 4] }.reduce(CGRect.null) { $0.union($1) }
+                RoundedRectangle(cornerRadius: 26)
+                    .fill(Theme.look.opacity(0.12))
+                    .frame(width: row.width + 12, height: row.height + 12)
+                    .offset(x: row.minX - 6, y: row.minY - 6)
+                RoundedRectangle(cornerRadius: 26)
+                    .fill(Theme.glow.opacity(0.10))
+                    .frame(width: col.width + 12, height: col.height + 12)
+                    .offset(x: col.minX - 6, y: col.minY - 6)
+            }
             ForEach(GazeModel.cells) { cell in
                 if let frame = layout.cells[safe: cell.id] {
                     let isTarget = calibrationTarget == cell.id

@@ -60,6 +60,10 @@ struct StatusPill: View {
                     Text("val \(Int((val * 100).rounded()))%")
                         .foregroundStyle(val >= 0.8 ? .green : val >= 0.5 ? .yellow : .red)
                 }
+                if let f = s.featureVector, let i = FeatureLayout.names(dimension: f.count).firstIndex(of: "pitch") {
+                    Text("pitch \(f[i] * 180 / .pi, specifier: "%+.1f")°")
+                        .foregroundStyle(Theme.look)
+                }
                 Text("\(model.fps) fps")
                 Text(model.hingeText)
                     .foregroundStyle(Theme.muted)

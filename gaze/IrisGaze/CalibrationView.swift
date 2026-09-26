@@ -9,10 +9,24 @@ struct CalibrationView: View {
             GridView(model: model, layout: layout, calibrationTarget: model.calibratingZone)
                 .opacity(model.isCalibrating ? 0.55 : 0.25)
 
-            if let k = model.calibratingZone, let frame = layout.cells[safe: k] {
-                CalibrationTarget(phase: model.calibrationPhase, progress: model.calibrationProgress, cellSize: frame.size)
-                    .position(x: frame.midX, y: frame.midY)
-                    .id(k)
+            if let t = model.calibrationTarget, let cellSize = layout.cells.first?.size {
+                let p = CGPoint(x: t.x * layout.size.width, y: t.y * layout.size.height)
+                CalibrationTarget(phase: model.calibrationPhase, progress: model.calibrationProgress, cellSize: cellSize)
+                    .position(p)
+                    .id("\(t.x),\(t.y)")
+                if let text = model.calibrationInstruction {
+                    Text(text)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Theme.look.opacity(0.85), in: .capsule)
+                        .fixedSize()
+                        .position(x: min(max(p.x, 170), layout.size.width - 170),
+                                  y: p.y + cellSize.height * 0.45 > (layout.cells.last?.maxY ?? 0)
+                                    ? p.y - cellSize.height * 0.5 : p.y + cellSize.height * 0.5)
+                        .allowsHitTesting(false)
+                }
             }
 
             if let first = layout.cells.first, let last = layout.cells.last {

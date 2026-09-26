@@ -9,12 +9,10 @@ struct DebugOverlay: View {
 
     var body: some View {
         let size = layout.size
-        let centers = layout.normalizedCenters
         let projected = model.calibrator.projected
         ZStack(alignment: .topLeading) {
             Canvas { ctx, _ in
-                for (p, cell) in projected {
-                    guard let t = centers[safe: cell] else { continue }
+                for (p, t) in projected {
                     let a = CGPoint(x: t.x * size.width, y: t.y * size.height)
                     let b = CGPoint(x: p.x * size.width, y: p.y * size.height)
                     var line = Path()
@@ -83,7 +81,8 @@ struct CalibrationTarget: View {
                 .frame(width: d * 0.62, height: d * 0.62)
             Circle()
                 .trim(from: 0, to: phase == .settle ? 1 - progress : progress)
-                .stroke(phase == .sampling ? Color.green : phase == .validating ? Theme.glow : Theme.look,
+                .stroke(phase == .sampling ? Color.green : phase == .moving ? Color.orange
+                            : phase == .validating ? Theme.glow : Theme.look,
                         style: StrokeStyle(lineWidth: 7, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .frame(width: d * 0.62, height: d * 0.62)

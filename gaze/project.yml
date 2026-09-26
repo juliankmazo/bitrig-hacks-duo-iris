@@ -1,11 +1,16 @@
 name: IrisGaze
 options: { bundleIdPrefix: dev.julian }
+packages:
+  KeyboardCore:
+    path: ../packages/KeyboardCore
 targets:
   IrisGaze:
     type: application
     platform: iOS
     deploymentTarget: "27.1"
     sources: [IrisGaze]
+    dependencies:
+      - package: KeyboardCore
     info:
       path: IrisGaze/Info.plist
       properties:
@@ -21,3 +26,25 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
         SWIFT_VERSION: "5.0"
+
+  IrisGazeTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "27.1"
+    sources: [Tests]
+    dependencies:
+      - target: IrisGaze
+      - package: KeyboardCore
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_VERSION: "5.0"
+schemes:
+  IrisGaze:
+    build:
+      targets:
+        IrisGaze: all
+        IrisGazeTests: [test]
+    test:
+      targets: [IrisGazeTests]

@@ -15,7 +15,7 @@ struct GridCell: Identifiable {
 
     var isSelectable: Bool { true }
 
-    /// Level-2 items of a letter cell: its letters ("Qu" is one item) followed by the two extras.
+    /// Level-2 items of a letter cell: its letters (Q and U are separate) followed by the two extras.
     var items: [String] {
         guard kind == .letters else { return [] }
         var letters: [String] = []
@@ -30,7 +30,7 @@ struct GridCell: Identifiable {
         GridCell(id: 1, label: "EFGH", sub: "2 3", kind: .letters),
         GridCell(id: 2, label: "IJKLM", sub: "4 5", kind: .letters),
         GridCell(id: 3, label: "Word 1", kind: .suggest),
-        GridCell(id: 4, label: "NOPQu", sub: "6 7", kind: .letters),
+        GridCell(id: 4, label: "NOPQ", sub: "6 7", kind: .letters),
         GridCell(id: 5, label: "RSTUV", sub: "8 9", kind: .letters),
         GridCell(id: 6, label: "WXYZ", sub: "? !", kind: .letters),
         GridCell(id: 7, label: "Word 2", kind: .suggest),

@@ -51,7 +51,7 @@ struct GridView: View {
         return ForEach(GazeModel.cells) { base in
             if let frame = layout.cells[safe: base.id] {
                 let cell = isKeyboard && base.kind == .suggest
-                    ? GridCell(id: base.id, label: suggestions[safe: [3: 0, 7: 1, 11: 2][base.id] ?? 0] ?? base.label, kind: .suggest)
+                    ? GridCell(id: base.id, label: suggestions[safe: [3: 0, 7: 1, 11: 2][base.id] ?? 0] ?? "—", kind: .suggest)
                     : base
                 let isTarget = calibrationTarget == cell.id
                 let isGazed = calibrationTarget == nil && model.zone == cell.id && !model.needsCalibration
@@ -70,23 +70,36 @@ struct GridView: View {
         }
     }
 
-    /// Level 2: the group's items (row 0: first 4, row 1: the rest), "← back" across the bottom row.
+    /// Exact characters and controls retain the rightmost suggestion column.
     private func level2(group: Int) -> some View {
+        Group {
         ForEach(Keyboard.keys(forGroup: group)) { key in
             let frame = key.cells.compactMap { layout.cells[safe: $0] }.reduce(CGRect.null) { $0.union($1) }
             let isGazed = model.zone.map { key.cells.contains($0) } ?? false
             CellView(
-                cell: GridCell(id: key.cells[0], label: key.label, kind: key.isBack ? .back : .letters),
+                cell: GridCell(id: key.cells[0], label: key.label, kind: key.kind),
                 isGazed: isGazed && !model.needsCalibration,
                 isTarget: false,
                 progress: isGazed ? model.dwellProgress : 0,
                 isFlashing: model.flashZone.map { key.cells.contains($0) } ?? false,
                 isCalibrated: false,
-                large: !key.isBack
+                large: key.kind == .letters
             )
             .frame(width: frame.width, height: frame.height)
             .offset(x: frame.minX, y: frame.minY)
             .onTapGesture(count: model.usingSimulated ? 2 : 1) { model.select(key.cells[0]) }
+        }
+        ForEach(Array(Keyboard.suggestionCells.enumerated()), id: \.element) { index, cell in
+            if let frame = layout.cells[safe: cell] {
+                CellView(cell: GridCell(id: cell, label: model.suggestions[safe: index] ?? "—", kind: .suggest),
+                    isGazed: model.zone == cell && !model.needsCalibration, isTarget: false,
+                    progress: model.zone == cell ? model.dwellProgress : 0,
+                    isFlashing: model.flashZone == cell, isCalibrated: false)
+                    .frame(width: frame.width, height: frame.height)
+                    .offset(x: frame.minX, y: frame.minY)
+                    .onTapGesture(count: model.usingSimulated ? 2 : 1) { model.select(cell) }
+            }
+        }
         }
     }
 }

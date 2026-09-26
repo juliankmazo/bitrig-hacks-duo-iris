@@ -11,9 +11,12 @@ public final class SessionLog: @unchecked Sendable {
   private var sequence = 0
 
   private init() {
-    let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-      .deletingLastPathComponent().deletingLastPathComponent()
-    let directory = package.appendingPathComponent("logs")
+    #if os(iOS)
+    let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("PredictionLogs")
+    #else
+    let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("logs")
+    #endif
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
     path = directory.appendingPathComponent("sessions.jsonl").path

@@ -19,18 +19,16 @@ import KeyboardCore
   var generation = 0
   var task: Task<Void, Never>?
   var speech: Process?
-  struct PredictionKey: Hashable {
-    let text: String
-    let prefix: String
-    let bucket: Int
-  }
-  var cache: [PredictionKey: [String]] = [:]
-  var pendingPredictions: [PredictionKey] = []
-  var predictionTasks: [PredictionKey: Task<Void, Never>] = [:]
-  var prefetchGeneration = 0
+  let predictionEngine: PredictionEngine
 
   init(predictor: Predictor, autoAI: Bool, model: String) {
     self.predictor = predictor; self.autoAI = autoAI; self.model = model
+    self.predictionEngine = PredictionEngine(predictor: predictor)
+    predictionEngine.onChange = { [weak self] snapshot in
+      guard let self, self.autoAI, !self.phraseMode else { return }
+      self.words = snapshot.words; self.status = snapshot.status
+      self.render()
+    }
   }
 
   func run() async {
@@ -70,86 +68,16 @@ import KeyboardCore
     generation += 1; task?.cancel(); task = nil
   }
 
-  var activePrediction: PredictionKey {
-    PredictionKey(text: draft.text, prefix: draft.prefix, bucket: draft.pendingGroup ?? 0)
+  var activePrediction: PredictionState {
+    PredictionState(text: draft.text, prefix: draft.prefix, group: draft.pendingGroup ?? 0)
   }
 
-  func cancelPrefetch() {
-    prefetchGeneration += 1
-    for task in predictionTasks.values { task.cancel() }
-    predictionTasks = [:]; pendingPredictions = []
-  }
+  func cancelPrefetch() { predictionEngine.pause() }
 
   func refresh() {
-    invalidate(); phrases = []; phraseMode = false
-    words = []
-    status = autoAI ? "Loading AI suggestions… Select letters now or wait for suggestions." : "AI paused. Select letters or use Menu to request predictions."
-    if autoAI {
-      if let cached = cache[activePrediction] {
-        words = cached
-        SessionLog.shared.record("cache_hit", ["bucket": activePrediction.bucket, "words": cached])
-        status = cached.isEmpty ? "AI returned no words for this selection · see log" : "Cached AI suggestions · unfiltered"
-      }
-      prepareCache()
-    }
-  }
-
-  // Only speculate from the visible state, never recursively from speculative results.
-  func prepareCache() {
-    guard autoAI else { return }
-    var desired = [activePrediction]
-    func addState(_ text: String, _ prefix: String, allGroups: Bool = false) {
-      for bucket in 0...(allGroups ? 6 : 0) {
-        let key = PredictionKey(text: text, prefix: prefix, bucket: bucket)
-        if !desired.contains(key) { desired.append(key) }
-      }
-    }
-    addState(draft.text, draft.prefix, allGroups: true)
-    if let group = draft.pendingGroup {
-      for letter in Keyboard.groups[group - 1] {
-        addState(draft.text, draft.prefix + String(letter))
-      }
-    }
-    // Prepare Space for the current word and both transitions for visible suggestions.
-    let completions = (draft.prefix.isEmpty ? [] : [draft.prefix]) + words
-    for word in completions {
-      addState(draft.text, word)
-      let committed = draft.text + (draft.text.isEmpty ? "" : " ") + word
-      addState(committed, "", allGroups: true)
-    }
-    // Reprioritize on input. Completed and in-flight results survive edits; obsolete
-    // queued speculation is dropped so it cannot delay the user's next selection.
-    pendingPredictions = desired.filter { cache[$0] == nil && predictionTasks[$0] == nil }
-    pumpPredictions()
-  }
-
-  func pumpPredictions() {
-    let current = prefetchGeneration
-    while autoAI && predictionTasks.count < 8 && !pendingPredictions.isEmpty {
-      let key = pendingPredictions.removeFirst()
-      predictionTasks[key] = Task { [weak self, predictor] in
-        guard !Task.isCancelled else { return }
-        let keys = (Keyboard.signature(key.prefix) ?? "") + (key.bucket == 0 ? "" : String(key.bucket))
-        var predictions: [String]?
-        do {
-          predictions = try await predictor.predict(keys: keys, draft: key.text, context: "", expand: false, exactPrefix: key.prefix).words
-        } catch { }
-        guard let self, !Task.isCancelled, self.prefetchGeneration == current else { return }
-        self.predictionTasks[key] = nil
-        if let predictions {
-          self.cache[key] = predictions
-          SessionLog.shared.record("cache_store", ["bucket": key.bucket, "draft": key.text, "prefix": key.prefix, "words": predictions])
-        }
-        if key == self.activePrediction && !self.phraseMode {
-          self.words = predictions ?? []
-          self.status = predictions == nil ? "AI unavailable · see log" : (predictions!.isEmpty ? "AI returned no words · see log" : "AI suggestions ready · unfiltered")
-          self.render()
-          // Successful visible predictions introduce suggestion/Space destinations.
-          if predictions != nil { self.prepareCache() }
-        }
-        self.pumpPredictions()
-      }
-    }
+    invalidate(); phrases = []; phraseMode = false; words = []
+    status = "AI paused. Select letters or use Menu to request predictions."
+    if autoAI { predictionEngine.update(activePrediction) }
   }
 
   func predict(expand: Bool) {
@@ -167,7 +95,7 @@ import KeyboardCore
           self.phrases = result.phrases; self.phraseMode = true
         } else {
           self.words = result.words
-          self.prepareCache()
+          self.predictionEngine.store(result.words, for: self.activePrediction)
         }
         self.status = "AI suggestions ready"
         self.render()

@@ -2,6 +2,7 @@ import SwiftUI
 import Observation
 import os
 import AVFoundation
+import KeyboardCore
 
 enum Screen: String {
     case idle, calibration, grid
@@ -85,7 +86,14 @@ final class GazeModel {
     @ObservationIgnored private var sampleCount = 0
     @ObservationIgnored private var fpsWindowStart = Date.now
 
-    init() {
+    init(predictionEngine: PredictionEngine? = nil) {
+        self.predictionEngine = predictionEngine ?? PredictionEngine(
+            predictor: Predictor(key: PrototypeAIConfiguration.apiKey, model: PrototypeAIConfiguration.model))
+        self.predictionEngine.onChange = { [weak self] snapshot in
+            guard let self else { return }
+            self.suggestionDisplay.receive(snapshot.words)
+            self.predictionStatus = snapshot.status
+        }
         if let forced = Self.forcedScreen { screen = forced }
         // `-tour YES` starts the demo tour at launch (hands-free recording).
         simulated.tourEnabled = UserDefaults.standard.bool(forKey: "tour")
@@ -93,6 +101,8 @@ final class GazeModel {
 
     func start() {
         guard loop == nil else { return }
+        SessionLog.shared.record("session_start", ["app": "IrisGaze", "model": PrototypeAIConfiguration.model])
+        resumePredictions()
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 self?.tick()
@@ -200,16 +210,20 @@ final class GazeModel {
         let z = calibrator.process(s, layout: layout)
         if zone != z { zone = z }
         guard screen == .grid, !needsCalibration else {
+            suggestionDisplay.setDwelling(false)
             dwellProgress = 0
             dwellZone = nil
             return
         }
         guard let z, now >= cooldownUntil, isSelectable(z) else {
+            suggestionDisplay.setDwelling(false)
             dwellZone = nil
             if dwellProgress != 0 { dwellProgress = 0 }
             return
         }
         if z != dwellZone {
+            suggestionDisplay.setDwelling(false)
+            suggestionDisplay.setDwelling(Keyboard.suggestionCells.contains(z))
             dwellZone = z
             dwellStart = now
         }
@@ -229,9 +243,41 @@ final class GazeModel {
     // MARK: Typing
 
     /// Typed text (the reading area).
-    private(set) var text = ""
+    private var spelling = SpellingDraft()
+    var text: String {
+        spelling.text + (spelling.text.isEmpty ? "" : " ") + spelling.prefix
+    }
     /// Level 2: the letter-group cell that was zoomed into; nil = level 1.
-    private(set) var level2Group: Int?
+    var level2Group: Int? { spelling.pendingGroup.map { Keyboard.groupCells[$0 - 1] } }
+    private var suggestionDisplay = SuggestionDisplay()
+    private(set) var predictionStatus = "Loading AI suggestions…"
+    @ObservationIgnored private let predictionEngine: PredictionEngine
+    @ObservationIgnored private var predictionsActive = false
+
+    func pausePredictions() {
+        predictionsActive = false
+        predictionEngine.pause()
+        suggestionDisplay.setDwelling(false)
+        dwellZone = nil; dwellProgress = 0
+        predictionStatus = "AI paused"
+        SessionLog.shared.record("app_background")
+    }
+
+    func resumePredictions() {
+        predictionsActive = true
+        refreshPredictions()
+        SessionLog.shared.record("app_foreground")
+    }
+
+    func retryPredictions() { refreshPredictions() }
+
+    private func refreshPredictions() {
+        suggestionDisplay.reset()
+        dwellZone = nil; dwellProgress = 0
+        guard predictionsActive else { return }
+        predictionEngine.update(PredictionState(text: spelling.text, prefix: spelling.prefix,
+            group: spelling.pendingGroup ?? 0))
+    }
     @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
 
     /// Speak the typed text (en-US, rate 0.5).
@@ -251,56 +297,67 @@ final class GazeModel {
     /// Cell the zoom animates from.
     private(set) var zoomOrigin: Int = 5
 
-    var suggestions: [String] { Keyboard.suggestions(for: text) }
+    var suggestions: [String] { suggestionDisplay.words }
 
     func isSelectable(_ z: Int) -> Bool {
+        if let index = Keyboard.suggestionCells.firstIndex(of: z) {
+            return suggestions.indices.contains(index)
+        }
         if let g = level2Group { return Keyboard.key(at: z, group: g) != nil }
         return Self.cells[safe: z]?.isSelectable == true
     }
 
-    /// Label of what selecting cell `z` does at the current level (for the log / flash).
     func select(_ z: Int) {
         guard isSelectable(z) else { return }
-        var label: String
-        if let g = level2Group, let key = Keyboard.key(at: z, group: g) {
-            label = key.label
-            withAnimation(.easeOut(duration: 0.25)) {
-                if !key.isBack { text += key.label }
-                level2Group = nil
-            }
-        } else if let cell = Self.cells[safe: z] {
-            label = cell.logLabel
-            switch cell.kind {
-            case .letters:
-                zoomOrigin = z
-                withAnimation(.easeOut(duration: 0.25)) { level2Group = z }
-            case .space:
-                text += " "
-            case .delete:
-                if !text.isEmpty { text.removeLast() }
-            case .startOver:
-                // Clear with a short confirmation flash of the text area (no dialog).
-                startOverFlash = true
-                Task { [weak self] in
-                    try? await Task.sleep(for: .milliseconds(300))
-                    self?.startOverFlash = false
-                }
-                text = ""
-            case .suggest:
-                let i = [3: 0, 7: 1, 11: 2][z] ?? 0
-                guard let word = suggestions[safe: i] else { return }
+        var label = ""
+        do {
+            if let index = Keyboard.suggestionCells.firstIndex(of: z) {
+                // Read the same frozen array the user sees, not the engine's latest result.
+                let word = suggestions[index]
                 label = word
-                text = String(text.dropLast(Keyboard.currentWord(in: text).count)) + word + " "
-            case .back:
-                return
+                try spelling.accept(word)
+            } else if let g = level2Group, let key = Keyboard.key(at: z, group: g) {
+                label = key.label
+                switch key.kind {
+                case .back: spelling.back()
+                case .delete: spelling.delete()
+                case .letters:
+                    if let index = Keyboard.characterCells.firstIndex(of: z) { try spelling.choose(index) }
+                default: break
+                }
+            } else if let cell = Self.cells[safe: z] {
+                label = cell.logLabel
+                switch cell.kind {
+                case .letters:
+                    guard let index = Keyboard.groupCells.firstIndex(of: z) else { return }
+                    zoomOrigin = z
+                    try spelling.open(index + 1)
+                case .space:
+                    guard !spelling.prefix.isEmpty else { return }
+                    try spelling.finish()
+                case .delete: spelling.delete()
+                case .startOver:
+                    startOverFlash = true
+                    Task { [weak self] in
+                        try? await Task.sleep(for: .milliseconds(300))
+                        self?.startOverFlash = false
+                    }
+                    spelling.clear()
+                case .suggest, .back: return
+                }
             }
-        } else {
+        } catch {
+            predictionStatus = error.localizedDescription
             return
         }
+        cooldownUntil = Date.now.addingTimeInterval(Self.cooldown)
+        refreshPredictions()
         selected = label
         log.append(label)
         if log.count > 40 { log.removeFirst(log.count - 40) }
         flashZone = z
+        SessionLog.shared.record("selection", ["cell": z, "label": label, "text": spelling.text,
+            "prefix": spelling.prefix, "group": spelling.pendingGroup as Any? ?? NSNull()])
         Self.logger.notice("selected \(label, privacy: .public) text=\(self.text, privacy: .public)")
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
@@ -309,10 +366,8 @@ final class GazeModel {
     }
 
     func clearLog() {
-        log.removeAll()
-        selected = nil
-        text = ""
-        level2Group = nil
+        log.removeAll(); selected = nil; spelling.clear()
+        refreshPredictions()
     }
 
     static func median(_ rows: [[Double]]) -> [Double]? {

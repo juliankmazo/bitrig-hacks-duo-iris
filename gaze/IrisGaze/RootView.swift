@@ -78,7 +78,7 @@ struct CalibrateCallToAction: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Theme.look)
-            Text("Look at 12 cells, one at a time (\(model.calibrator.calibratedCount)/12)")
+            Text("Point your nose at each target: 12 cells\(model.includeCorners ? " + 4 corners" : ""), then a short validation")
                 .font(.callout)
                 .foregroundStyle(Theme.muted)
         }
@@ -96,9 +96,9 @@ struct GazeCursor: View {
     var body: some View {
         if let p = model.calibrator.smoothed {
             Circle()
-                .strokeBorder(.white.opacity(0.9), lineWidth: 2)
-                .background(Circle().fill(Theme.glow.opacity(0.25)))
-                .frame(width: 28, height: 28)
+                .strokeBorder(Theme.glow.opacity(0.6), lineWidth: 1.5)
+                .background(Circle().fill(Theme.glow.opacity(0.15)))
+                .frame(width: 18, height: 18)
                 .position(x: p.x * size.width, y: p.y * size.height)
                 .allowsHitTesting(false)
         }

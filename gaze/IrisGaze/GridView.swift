@@ -1,28 +1,32 @@
 import SwiftUI
 
-/// The 12 cells. Used by both the typing grid and calibration (with a LOOK HERE target).
+/// The 12 cells. Used by both the typing keyboard and calibration (with a LOOK HERE target).
 struct GridView: View {
     let model: GazeModel
     let layout: GridLayout
     var calibrationTarget: Int? = nil
+    /// Typing (not calibration): level 2 and live suggestions apply.
+    var isTyping = true
+
+    private var isKeyboard: Bool { isTyping && calibrationTarget == nil }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if let fold = layout.fold {
                 FoldBand(rect: fold, simulated: layout.isSimulatedFold)
             }
-            // Separate row / column feedback: nodding picks the row, the eyes pick the column.
+            // Very faint row / column feedback: nodding picks the row, the eyes pick the column.
             if calibrationTarget == nil, !model.needsCalibration, let z = model.zone, layout.cells.count == 12 {
                 let row = (0..<4).map { layout.cells[(z / 4) * 4 + $0] }.reduce(CGRect.null) { $0.union($1) }
                 let col = (0..<3).map { layout.cells[$0 * 4 + z % 4] }.reduce(CGRect.null) { $0.union($1) }
-                RoundedRectangle(cornerRadius: 26)
-                    .fill(Theme.look.opacity(0.12))
-                    .frame(width: row.width + 12, height: row.height + 12)
-                    .offset(x: row.minX - 6, y: row.minY - 6)
-                RoundedRectangle(cornerRadius: 26)
-                    .fill(Theme.glow.opacity(0.10))
-                    .frame(width: col.width + 12, height: col.height + 12)
-                    .offset(x: col.minX - 6, y: col.minY - 6)
+                RoundedRectangle(cornerRadius: 34)
+                    .fill(Theme.glow.opacity(0.05))
+                    .frame(width: row.width + 14, height: row.height + 14)
+                    .offset(x: row.minX - 7, y: row.minY - 7)
+                RoundedRectangle(cornerRadius: 34)
+                    .fill(Theme.glow.opacity(0.05))
+                    .frame(width: col.width + 14, height: col.height + 14)
+                    .offset(x: col.minX - 7, y: col.minY - 7)
             }
             Group {
                 if isKeyboard, let g = model.level2Group {
@@ -37,10 +41,6 @@ struct GridView: View {
         .animation(.spring(duration: 0.3), value: calibrationTarget)
     }
 
-    /// Typing (not calibration): level 2 and suggestions apply.
-    private var isKeyboard: Bool { isTyping && calibrationTarget == nil }
-    var isTyping = true
-
     private var zoomAnchor: UnitPoint {
         guard let f = layout.cells[safe: model.zoomOrigin], layout.size.width > 0 else { return .center }
         return UnitPoint(x: f.midX / layout.size.width, y: f.midY / layout.size.height)
@@ -51,8 +51,7 @@ struct GridView: View {
         return ForEach(GazeModel.cells) { base in
             if let frame = layout.cells[safe: base.id] {
                 let cell = isKeyboard && base.kind == .suggest
-                    ? GridCell(id: base.id, label: suggestions[safe: [3: 0, 7: 1, 11: 2][base.id] ?? 0] ?? "–",
-                               caption: "SUGGEST", kind: .suggest)
+                    ? GridCell(id: base.id, label: suggestions[safe: [3: 0, 7: 1, 11: 2][base.id] ?? 0] ?? base.label, kind: .suggest)
                     : base
                 let isTarget = calibrationTarget == cell.id
                 let isGazed = calibrationTarget == nil && model.zone == cell.id && !model.needsCalibration
@@ -62,7 +61,7 @@ struct GridView: View {
                     isTarget: isTarget,
                     progress: isTarget ? model.calibrationProgress : (isGazed ? model.dwellProgress : 0),
                     isFlashing: model.flashZone == cell.id,
-                    isCalibrated: !isKeyboard && model.calibrator.calibratedCells.contains(cell.id)
+                    isCalibrated: !isTyping && model.calibrator.calibratedCells.contains(cell.id)
                 )
                 .frame(width: frame.width, height: frame.height)
                 .offset(x: frame.minX, y: frame.minY)
@@ -71,13 +70,13 @@ struct GridView: View {
         }
     }
 
-    /// Level 2: the group's letters, each over a whole column span; "back" across the bottom row.
+    /// Level 2: the group's items (row 0: first 4, row 1: the rest), "← back" across the bottom row.
     private func level2(group: Int) -> some View {
         ForEach(Keyboard.keys(forGroup: group)) { key in
             let frame = key.cells.compactMap { layout.cells[safe: $0] }.reduce(CGRect.null) { $0.union($1) }
             let isGazed = model.zone.map { key.cells.contains($0) } ?? false
             CellView(
-                cell: GridCell(id: key.cells[0], label: key.label, kind: key.isBack ? .action : .letters),
+                cell: GridCell(id: key.cells[0], label: key.label, kind: key.isBack ? .back : .letters),
                 isGazed: isGazed && !model.needsCalibration,
                 isTarget: false,
                 progress: isGazed ? model.dwellProgress : 0,
@@ -98,7 +97,7 @@ struct FoldBand: View {
 
     var body: some View {
         ZStack {
-            Rectangle().fill(.white.opacity(0.03))
+            Rectangle().fill(.black.opacity(0.03))
             Text(simulated ? "fold (simulated)" : "fold")
                 .font(.caption2.smallCaps())
                 .foregroundStyle(Theme.muted.opacity(0.6))
@@ -111,6 +110,8 @@ struct FoldBand: View {
     }
 }
 
+/// One key, light theme: off-white letter cells with a soft shadow, near-black action cells,
+/// soft-blue word cells. Gaze: 4 pt blue outline + blue progress ring.
 struct CellView: View {
     let cell: GridCell
     let isGazed: Bool
@@ -120,80 +121,66 @@ struct CellView: View {
     let isCalibrated: Bool
     var large = false
 
-    private var borderColor: Color {
-        if isTarget { return Theme.look }
-        if isGazed { return Theme.glow }
-        return cell.kind == .suggest ? Theme.suggest.opacity(0.45) : Theme.cellBorder
+    private var isDark: Bool { [.delete, .space, .startOver, .back].contains(cell.kind) }
+
+    private var fill: Color {
+        if isFlashing { return Theme.glow.opacity(0.35) }
+        switch cell.kind {
+        case .suggest: return Theme.suggestFill
+        case .delete, .space, .startOver, .back: return Theme.action
+        case .letters: return Theme.cell
+        }
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 20)
+        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
         ZStack {
-            shape.fill(isFlashing ? Theme.glow.opacity(0.55) : (isGazed ? Theme.glow.opacity(0.18) : Theme.cell.opacity(cell.kind == .suggest ? 0.6 : 1)))
-            shape.strokeBorder(borderColor,
-                               style: StrokeStyle(lineWidth: isGazed || isTarget ? 3 : 1.5,
-                                                  dash: cell.kind == .suggest && !isGazed && !isTarget ? [7, 5] : []))
+            shape.fill(fill)
+                .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
+            if isGazed || isTarget {
+                shape.strokeBorder(isTarget ? Theme.look : Theme.glow, lineWidth: 4)
+            }
             if progress > 0 {
                 Circle()
                     .trim(from: 0, to: progress)
                     .stroke(isTarget ? Theme.look : Theme.glow, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .aspectRatio(1, contentMode: .fit)
-                    .padding(10)
+                    .padding(14)
+                    .opacity(0.9)
             }
-            content
-                .padding(.horizontal, 8)
-                .padding(.top, 20)
-                .padding(.bottom, 6)
-            Text(large || cell.label == Keyboard.backLabel ? "" : "\(cell.id)")
-                .font(.caption2.monospacedDigit().weight(.semibold))
-                .foregroundStyle(Theme.muted)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            if isCalibrated && !isTarget {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green.opacity(0.7))
-                    .padding(10)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
-        }
-        .shadow(color: isGazed ? Theme.glow.opacity(0.7) : .clear, radius: 14)
-        .shadow(color: isTarget ? Theme.look.opacity(0.6) : .clear, radius: 14)
-        .animation(.easeOut(duration: 0.15), value: isGazed)
-        .animation(.easeOut(duration: 0.2), value: isFlashing)
-        .accessibilityElement()
-        .accessibilityLabel(cell.caption.map { "\(cell.label), \($0)" } ?? cell.label)
-        .accessibilityAddTraits(.isButton)
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        VStack(spacing: 4) {
-            Group {
-                if let icon = cell.systemImage {
-                    Image(systemName: icon)
-                        .font(.system(size: 34, weight: .semibold))
-                } else {
-                    Text(cell.label)
-                        .font(.system(size: large ? 110 : cell.kind == .suggest ? 26 : 40, weight: .bold, design: .rounded))
+            VStack(spacing: 6) {
+                Text(cell.label)
+                    .font(.system(size: large ? 96 : 34, weight: .regular))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.4)
+                if let sub = cell.sub {
+                    Text(sub)
+                        .font(.system(size: 34, weight: .regular))
                         .lineLimit(1)
                         .minimumScaleFactor(0.4)
                 }
+                if isTarget {
+                    Text("LOOK HERE")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.2)
+                        .foregroundStyle(Theme.look)
+                }
             }
-            .foregroundStyle(cell.kind == .suggest ? Theme.suggest : Theme.text)
-            if isTarget {
-                Text("LOOK HERE")
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.2)
-                    .foregroundStyle(Theme.look)
-            } else if let caption = cell.caption {
-                Text(caption)
-                    .font(.caption2.weight(.semibold))
-                    .tracking(1.2)
-                    .foregroundStyle(Theme.muted)
+            .foregroundStyle(isDark ? .white : Theme.text)
+            .padding(12)
+            if isCalibrated && !isTarget {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
+        .animation(.easeOut(duration: 0.15), value: isGazed)
+        .animation(.easeOut(duration: 0.2), value: isFlashing)
+        .accessibilityElement()
+        .accessibilityLabel(cell.sub.map { "\(cell.label), \($0)" } ?? cell.label)
+        .accessibilityAddTraits(.isButton)
     }
 }

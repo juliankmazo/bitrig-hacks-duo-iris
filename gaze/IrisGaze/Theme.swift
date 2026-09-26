@@ -1,13 +1,16 @@
 import SwiftUI
 
+/// Light theme (Julian's keyboard design).
 enum Theme {
-    static let background = Color(red: 0.04, green: 0.07, blue: 0.16)
-    static let cell = Color(red: 0.08, green: 0.12, blue: 0.24)
-    static let cellBorder = Color(red: 0.18, green: 0.24, blue: 0.40)
-    static let text = Color(red: 0.91, green: 0.93, blue: 0.97)
-    static let muted = Color(red: 0.55, green: 0.62, blue: 0.78)
-    static let suggest = Color(red: 0.56, green: 0.68, blue: 0.88)
-    static let glow = Color(red: 0.30, green: 0.64, blue: 1.0)
-    static let look = Color(red: 0.66, green: 0.44, blue: 1.0)
-    static let panel = Color(red: 0.07, green: 0.10, blue: 0.21)
+    static let background = Color(red: 0.96, green: 0.96, blue: 0.97)
+    static let cell = Color(red: 0.97, green: 0.97, blue: 0.97)          // #F7F7F7
+    static let cellBorder = Color.black.opacity(0.06)
+    static let action = Color(red: 0.17, green: 0.17, blue: 0.17)        // #2B2B2B
+    static let suggestFill = Color(red: 0.66, green: 0.80, blue: 0.96)   // #A9CBF5
+    static let text = Color(red: 0.11, green: 0.11, blue: 0.12)
+    static let muted = Color(red: 0.45, green: 0.46, blue: 0.50)
+    static let suggest = text
+    static let glow = Color(red: 0.16, green: 0.47, blue: 0.96)          // gaze blue
+    static let look = Color(red: 0.55, green: 0.30, blue: 0.95)          // calibration purple
+    static let panel = Color.white
 }

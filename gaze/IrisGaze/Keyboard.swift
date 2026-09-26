@@ -1,10 +1,8 @@
 import Foundation
 
 /// Two-level gaze keyboard over the fixed 4x3 cell geometry (the gaze model never changes).
-///
-/// Level 2 layout: columns are what the eyes resolve reliably, rows need a nod. So each letter owns a whole
-/// column span (two stacked cells), and "back" owns the bottom row: picking a letter only needs the column
-/// right, and a one-row error can't type the wrong letter.
+/// Level 2: row 0 = the group's first 4 items (one per column), row 1 = the remaining 2-3 items,
+/// row 2 = a whole-row "← back".
 enum Keyboard {
     /// A level-2 key: a label and the cells (row-major 0...11) it covers.
     struct Key: Identifiable {
@@ -17,19 +15,16 @@ enum Keyboard {
     static let backLabel = "← back"
 
     static func keys(forGroup cell: Int) -> [Key] {
-        let letters = GazeModel.cells[safe: cell].map { Array($0.label).map(String.init) } ?? []
+        let items = GazeModel.cells[safe: cell]?.items ?? []
         var keys: [Key] = []
-        switch letters.count {
-        case 4:
-            // A B C D, each in rows 0-1 of its column
-            for (c, l) in letters.enumerated() { keys.append(Key(id: c, label: l, cells: [c, c + 4])) }
-        case 6:
-            // U V W X in row 0, Y / Z split row 1
-            for (c, l) in letters.prefix(4).enumerated() { keys.append(Key(id: c, label: l, cells: [c])) }
-            keys.append(Key(id: 4, label: letters[4], cells: [4, 5]))
-            keys.append(Key(id: 5, label: letters[5], cells: [6, 7]))
-        default:
-            for (i, l) in letters.enumerated() where i < 8 { keys.append(Key(id: i, label: l, cells: [i])) }
+        for (c, item) in items.prefix(4).enumerated() { keys.append(Key(id: c, label: item, cells: [c])) }
+        let rest = Array(items.dropFirst(4))
+        switch rest.count {
+        case 2:   // spread: each spans two columns
+            keys.append(Key(id: 4, label: rest[0], cells: [4, 5]))
+            keys.append(Key(id: 5, label: rest[1], cells: [6, 7]))
+        default:  // 3 (or 1): one per column, unused cells empty
+            for (i, item) in rest.prefix(4).enumerated() { keys.append(Key(id: 4 + i, label: item, cells: [4 + i])) }
         }
         keys.append(Key(id: 99, label: backLabel, cells: [8, 9, 10, 11]))
         return keys
@@ -49,11 +44,11 @@ enum Keyboard {
     about would could will if or at as from by an his her them their our us him think see come make take give \
     tell say said look back well also very really much many sorry love hot cold tired hungry thirsty bathroom \
     bed sleep eat drink food medicine doctor nurse call phone tv music light turn off open close stop wait \
-    again little bit better worse hurts hurt head leg arm back chest breathe breathing air blanket pillow chair \
+    again little bit better worse hurts hurt head leg arm chest breathe breathing air blanket pillow chair \
     move lift sit stand lie left right family friend wife husband mom dad son daughter kids name morning night \
     later soon something nothing anything everything someone people way work read book watch hear listen talk \
     speak slowly quiet loud happy sad scared worried fine great nice new old first last next other same did \
-    does done been had has am were then than because only still even too off over after before into
+    does done been had has am were then than because only still even too over after before into
     """
     .split(whereSeparator: \.isWhitespace).map(String.init)
 
@@ -62,7 +57,9 @@ enum Keyboard {
         let partial = currentWord(in: text).lowercased()
         guard !partial.isEmpty else { return ["I", "you", "the"] }
         var seen = Set<String>()
-        let matches = words.filter { $0.lowercased().hasPrefix(partial) && $0.lowercased() != partial && seen.insert($0.lowercased()).inserted }
+        let matches = words.filter {
+            $0.lowercased().hasPrefix(partial) && $0.lowercased() != partial && seen.insert($0.lowercased()).inserted
+        }
         return Array(matches.prefix(3))
     }
 

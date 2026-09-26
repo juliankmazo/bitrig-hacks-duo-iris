@@ -246,7 +246,11 @@ final class GazeModel {
     // MARK: Typing
 
     /// Typed text (the reading area).
-    private(set) var text = ""
+    private(set) var text = "" {
+        didSet { if text != oldValue { suggestionEngine.textChanged(text) } }
+    }
+    /// Pluggable word prediction (intent server + local fallback).
+    let suggestionEngine = SuggestionEngine()
     /// Level 2: the letter-group cell that was zoomed into; nil = level 1.
     private(set) var level2Group: Int?
     @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
@@ -255,6 +259,7 @@ final class GazeModel {
     func speak() {
         let t = text.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
+        suggestionEngine.spoke(t)
         synthesizer.stopSpeaking(at: .immediate)
         let u = AVSpeechUtterance(string: t)
         u.voice = AVSpeechSynthesisVoice(language: "en-US")
@@ -272,7 +277,7 @@ final class GazeModel {
     /// Cell the zoom animates from.
     private(set) var zoomOrigin: Int = 5
 
-    var suggestions: [String] { Keyboard.suggestions(for: text) }
+    var suggestions: [String] { suggestionEngine.suggestions }
 
     func isSelectable(_ z: Int) -> Bool {
         if let g = level2Group { return Keyboard.key(at: z, group: g) != nil }
@@ -443,6 +448,7 @@ final class GazeModel {
         calibrationTask?.cancel()
         calibrator.clear()
         calibrationStep = 0
+        level2Group = nil
         isCalibrating = true
         showDebug = false
         validationAccuracy = nil

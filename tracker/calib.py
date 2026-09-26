@@ -9,6 +9,10 @@ Candidates (all ridge on standardized features, optional quadratic / interaction
   phys_bs  phys + signed eyeLook* blendshape combos
   head     head pose only (--mode head)
 
+Calibration stages (per sample): "still" (head still, eyes to the dot), "move" (gentle head turns/nods
+while fixating), "point" (single-phase --cal-hold capture), "sweep" (optional central head sweep).
+still/move/point frames of one dot share a group id, so LOPO holds out a whole dot.
+
 `fit()` scores every candidate x ridge strength with leave-one-calibration-point-out cross-validation
 (cheap: per-group Gram matrices are subtracted from the total) and keeps the best, unless a model is forced.
 
@@ -59,6 +63,15 @@ SPECS: dict[str, Spec] = {s.name: s for s in (
     Spec("head", _HEAD, quad=("yaw", "pitch")),
 )}
 AUTO_CANDIDATES = ("v1", "v1f", "v2", "phys", "phys_bs")
+POINT_STAGES = ("point", "still", "move")
+MOVING_STAGES = ("move", "sweep")          # head-motion frames: weighted by move_weight
+
+
+def sample_weights(stages: np.ndarray, move_weight: float = 1.0) -> np.ndarray | None:
+    """Per-sample weights: move_weight on head-motion frames (move / sweep), 1 elsewhere. None = unweighted."""
+    if move_weight == 1.0:
+        return None
+    return np.where(np.isin(stages, MOVING_STAGES), move_weight, 1.0)
 
 
 def zones_of(P: np.ndarray, cols: int, rows: int) -> np.ndarray:
@@ -121,16 +134,23 @@ def fit_one(F: np.ndarray, T: np.ndarray, spec: Spec, lam: float, quad_on: bool,
 
 
 def lopo(F: np.ndarray, T: np.ndarray, groups: np.ndarray, stages: np.ndarray, spec: Spec,
-         lams, quad_on: bool, cols: int, rows: int) -> dict[float, dict]:
-    """Leave-one-calibration-point-out CV. Sweep groups are never held out as points (they are always in
-    training) but get their own score: fit without the sweep, predict the sweep frames (= head tolerance).
+         lams, quad_on: bool, cols: int, rows: int, weights: np.ndarray | None = None) -> dict[float, dict]:
+    """Leave-one-calibration-point-out CV (a held-out dot takes its still + move frames with it).
+    Head-tolerance score `sweep_err`: if there are "move" frames, fit on the still frames only and predict
+    the move frames; otherwise (old recordings) fit without the sweep and predict the sweep frames.
     Returns {lam: {"err", "acc", "per_group": {g: (err, acc)}, "sweep_err"}}."""
     d = Design(spec, F, quad_on)           # global standardization (tiny leak, fine for model selection)
     X = d(F)
-    G, B = X.T @ X, X.T @ T
-    point_groups = sorted({int(g) for g, s in zip(groups, stages) if s == "point"})
-    sweep_mask = stages == "sweep"
-    stats = {g: (X[groups == g].T @ X[groups == g], X[groups == g].T @ T[groups == g]) for g in point_groups}
+    w = np.ones(len(X)) if weights is None else np.asarray(weights, dtype=np.float64)
+    Xw = X * w[:, None]                    # weighted Gram: X^T W X, X^T W T
+    G, B = Xw.T @ X, Xw.T @ T
+    point_groups = sorted({int(g) for g, s in zip(groups, stages) if s in POINT_STAGES})
+    if (stages == "move").any():
+        heldout_mask, train_mask = stages == "move", stages == "still"
+    else:
+        heldout_mask = stages == "sweep"
+        train_mask = ~heldout_mask
+    stats = {g: (Xw[groups == g].T @ X[groups == g], Xw[groups == g].T @ T[groups == g]) for g in point_groups}
     tz = zones_of(T, cols, rows)
     out = {}
     for lam in lams:
@@ -147,10 +167,10 @@ def lopo(F: np.ndarray, T: np.ndarray, groups: np.ndarray, stages: np.ndarray, s
             per[g] = (float(np.linalg.norm(pred - T[m], axis=1).mean()),
                       float((zones_of(pred, cols, rows) == tz[m]).mean()))
         sweep_err = None
-        if sweep_mask.any() and (~sweep_mask).sum() > X.shape[1]:
-            Xs = X[~sweep_mask]
-            W = np.linalg.solve(Xs.T @ Xs + P, Xs.T @ T[~sweep_mask])
-            sweep_err = float(np.linalg.norm(X[sweep_mask] @ W - T[sweep_mask], axis=1).mean())
+        if heldout_mask.any() and train_mask.sum() > X.shape[1]:
+            Xs = X[train_mask]
+            W = np.linalg.solve(Xs.T @ Xs + P, Xs.T @ T[train_mask])
+            sweep_err = float(np.linalg.norm(X[heldout_mask] @ W - T[heldout_mask], axis=1).mean())
         if per:
             out[lam] = {"err": float(np.mean([e for e, _ in per.values()])),
                         "acc": float(np.mean([a for _, a in per.values()])),
@@ -160,8 +180,9 @@ def lopo(F: np.ndarray, T: np.ndarray, groups: np.ndarray, stages: np.ndarray, s
 
 class CalibrationModel:
     def __init__(self, mode: str = "hybrid", ridge: float = 3.0, cols: int = 4, rows: int = 3,
-                 model: str = "auto", lambdas=DEFAULT_LAMBDAS, verbose: bool = True):
+                 model: str = "auto", lambdas=DEFAULT_LAMBDAS, verbose: bool = True, move_weight: float = 1.0):
         self.mode, self.ridge, self.cols, self.rows = mode, ridge, cols, rows
+        self.move_weight = move_weight
         self.model_choice = "head" if mode == "head" else model
         self.lambdas = tuple(sorted(set(lambdas) | {ridge}))
         self.verbose = verbose
@@ -190,7 +211,7 @@ class CalibrationModel:
 
     @property
     def n_points(self) -> int:
-        return len({(round(x, 3), round(y, 3)) for (x, y), s in zip(self.T, self.stages) if s != "sweep"})
+        return len({(round(x, 3), round(y, 3)) for (x, y), s in zip(self.T, self.stages) if s in POINT_STAGES})
 
     @property
     def ready(self) -> bool:
@@ -211,14 +232,15 @@ class CalibrationModel:
             groups = np.array([keys[(round(x, 3), round(y, 3))] for x, y in T])
         quad_on = self.n_points >= 7
         names = AUTO_CANDIDATES if self.model_choice == "auto" else (self.model_choice,)
-        n_groups = len({g for g, s in zip(groups, stages) if s == "point"})
+        n_groups = len({g for g, s in zip(groups, stages) if s in POINT_STAGES})
+        weights = sample_weights(stages, self.move_weight)
         # too few points for CV -> the compact physical model (or the forced one) at --ridge
         best = (float("inf"), "phys" if self.model_choice == "auto" else self.model_choice, self.ridge)
         self.report = {}
         if n_groups >= 4:
             lams = self.lambdas if self.model_choice == "auto" else (self.ridge,)
             for name in names:
-                res = lopo(F, T, groups, stages, SPECS[name], lams, quad_on, self.cols, self.rows)
+                res = lopo(F, T, groups, stages, SPECS[name], lams, quad_on, self.cols, self.rows, weights)
                 if not res:
                     continue
                 lam = min(res, key=lambda k: res[k]["err"])
@@ -227,7 +249,7 @@ class CalibrationModel:
                 if res[lam]["err"] < best[0]:
                     best = (res[lam]["err"], name, lam)
         _, name, lam = best
-        self.fitted = fit_one(F, T, SPECS[name], lam, quad_on)
+        self.fitted = fit_one(F, T, SPECS[name], lam, quad_on, weights)
         if self.verbose and self.report:
             print("[cal] " + self.summary(), flush=True)
         return True
@@ -237,7 +259,7 @@ class CalibrationModel:
             return "not fitted"
         parts = []
         for name, r in self.report.items():
-            sw = f" sw {r['sweep_err']:.3f}" if r.get("sweep_err") is not None else ""
+            sw = f" head {r['sweep_err']:.3f}" if r.get("sweep_err") is not None else ""
             mark = "*" if name == self.fitted.spec.name else ""
             parts.append(f"{mark}{name}(λ{r['lam']:g}) err {r['err']:.3f} acc {r['acc'] * 100:.0f}%{sw}")
         head = f"{self.n_points} pts, {len(self.F)} samples, using {self.fitted.spec.name} λ{self.fitted.lam:g}"
@@ -264,8 +286,8 @@ class CalibrationModel:
 
     @classmethod
     def load(cls, path: Path, mode: str, ridge: float, cols: int = 4, rows: int = 3,
-             model: str = "auto") -> "CalibrationModel":
-        m = cls(mode=mode, ridge=ridge, cols=cols, rows=rows, model=model)
+             model: str = "auto", move_weight: float = 1.0) -> "CalibrationModel":
+        m = cls(mode=mode, ridge=ridge, cols=cols, rows=rows, model=model, move_weight=move_weight)
         try:
             data = json.loads(path.read_text())
             if data.get("version") == 2 and tuple(data.get("names", ())) == ALL_NAMES:

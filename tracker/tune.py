@@ -11,7 +11,8 @@
     uv run --python 3.12 tracker/tune.py --synthetic        # self-test on generated data (no recordings needed)
 
 Reports, per candidate model (see calib.py): best ridge lambda, leave-one-calibration-point-out error
-(normalized screen units) and zone accuracy, the head-sweep error (fit without the sweep, predict it), and,
+(normalized screen units) and zone accuracy, the head-tolerance error ("head err": fit on the still frames,
+predict the head-moving frames; old recordings: fit without the sweep, predict it), and,
 when test_samples.jsonl has frames for this calibration, the zone-test score replayed through the live
 pipeline (median-3 + One Euro + hysteresis), scored like the UI (last 1.5 s of each 2 s target).
 
@@ -33,7 +34,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from gaze import ALL_NAMES, IDX, N_ALL, GazeEstimator, extract_all, landmarks_from_key  # noqa: E402
-from calib import AUTO_CANDIDATES, DEFAULT_LAMBDAS, SPECS, fit_one, lopo, zones_of  # noqa: E402
+from calib import AUTO_CANDIDATES, DEFAULT_LAMBDAS, SPECS, fit_one, lopo, sample_weights, zones_of  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +101,12 @@ class _FixedModel:
 
 
 def replay_test(frames: list[dict], fitted, args, recompute: bool, n_points: int) -> dict:
-    """frames: one test run, time ordered. Returns {"overall", "per_zone"} scored like the UI."""
+    """frames: one test run, time ordered. Returns {"overall", "per_zone", "pred"} scored like the UI;
+    pred = expected zone -> list of predicted zones on the scored frames."""
     est = GazeEstimator(_FixedModel(fitted, args.cols, args.rows, n_points), min_cutoff=args.min_cutoff,
                         beta=args.beta, hyst_frames=args.hyst_frames, hyst_margin=args.dead_band)
     hits: dict[int, list[int]] = defaultdict(list)
+    pred: dict[int, list[int]] = defaultdict(list)
     for r in frames:
         f = features_of(r, recompute)
         bs = r.get("bs") or {}
@@ -111,17 +114,38 @@ def replay_test(frames: list[dict], fitted, args, recompute: bool, n_points: int
         if r["since"] >= args.hold - args.window:
             zone = s.zone if (s.face and s.calibrated) else -1
             hits[r["zone"]].append(int(zone == r["zone"]))
+            pred[r["zone"]].append(zone)
     per = {z: float(np.mean(v)) for z, v in hits.items() if v}
-    return {"overall": float(np.mean(list(per.values()))) if per else float("nan"), "per_zone": per}
+    return {"overall": float(np.mean(list(per.values()))) if per else float("nan"), "per_zone": per, "pred": pred}
 
 
 def live_score(frames: list[dict], args) -> dict:
     hits: dict[int, list[int]] = defaultdict(list)
+    pred: dict[int, list[int]] = defaultdict(list)
     for r in frames:
         if r["since"] >= args.hold - args.window:
             hits[r["zone"]].append(int(r["live"]["zone"] == r["zone"]))
+            pred[r["zone"]].append(r["live"]["zone"])
     per = {z: float(np.mean(v)) for z, v in hits.items() if v}
-    return {"overall": float(np.mean(list(per.values()))) if per else float("nan"), "per_zone": per}
+    return {"overall": float(np.mean(list(per.values()))) if per else float("nan"), "per_zone": per, "pred": pred}
+
+
+def confusion(pred: dict[int, list[int]], cols: int, rows: int) -> str:
+    """expected zone -> most common predicted zone (share), plus the runner-up when it matters."""
+    out = []
+    for z in range(cols * rows):
+        v = pred.get(z)
+        if not v:
+            continue
+        vals, counts = np.unique(np.array(v), return_counts=True)
+        order = np.argsort(-counts)
+        top = f"{int(vals[order[0]]):>2} ({counts[order[0]] / len(v) * 100:3.0f}%)"
+        mark = "  ok" if vals[order[0]] == z else "  MISS"
+        second = ""
+        if len(order) > 1 and counts[order[1]] / len(v) >= 0.15:
+            second = f", then {int(vals[order[1]])} ({counts[order[1]] / len(v) * 100:.0f}%)"
+        out.append(f"      {z:>2} -> {top}{second}{mark}")
+    return "\n".join(out)
 
 
 def grid(per: dict, cols: int, rows: int) -> str:
@@ -187,19 +211,25 @@ def synthesize(out: Path, hold: bool, seed: int = 0, cols: int = 4, rows: int = 
     with cal_p.open("w") as fc:
         fc.write(json.dumps({"kind": "session", "session": session, "names": ALL_NAMES}) + "\n")
         targets = [(((z % cols) + .5) / cols, ((z // cols) + .5) / rows, "point") for z in range(cols * rows)]
-        if not hold:
-            targets.append((0.5, 0.5, "sweep"))
+
         for p, (tx, ty, stage) in enumerate(targets):
-            n = 24 if hold else (120 if stage == "sweep" else 90)
-            amp = 0.12 if stage == "sweep" else head_amp
+            n = 24 if hold else (120 if stage == "sweep" else 81)
             ph = rng.uniform(0, 6.3)
             for k in range(n + 12):
                 since = k / 30
+                used_k = k - 12
+                if hold:
+                    fstage, amp = "point", head_amp
+                elif stage == "sweep":
+                    fstage, amp = "sweep", 0.12
+                else:  # two-phase dot: 36 still frames then 45 moving
+                    fstage = "still" if used_k < 36 else "move"
+                    amp = 0.004 if fstage == "still" else head_amp
                 yaw = amp * np.sin(2 * np.pi * 0.5 * since + ph)
                 pitch = amp * 0.7 * np.sin(2 * np.pi * 0.37 * since + 2 * ph)
-                rec = {"kind": "cal", "session": session, "t": t, "point": p, "stage": stage, "tx": tx, "ty": ty,
+                rec = {"kind": "cal", "session": session, "t": t, "point": p, "stage": fstage, "tx": tx, "ty": ty,
                        "zone": min(cols - 1, int(tx * cols)) + cols * min(rows - 1, int(ty * rows)),
-                       "since": since, "used": since >= 0.4, **frame(tx, ty, yaw, pitch)}
+                       "since": since, "used": k >= 12, **frame(tx, ty, yaw, pitch)}
                 fc.write(json.dumps(rec) + "\n")
                 t += 1 / 30
     with test_p.open("w") as ft:
@@ -233,6 +263,9 @@ def main() -> None:
     ap.add_argument("--settle", type=float, default=None,
                     help="use frames with since >= SETTLE (default: the frames the server used)")
     ap.add_argument("--no-sweep", action="store_true", help="drop the head-sweep frames from training")
+    ap.add_argument("--no-move", action="store_true", help="drop the phase-B (head moving) frames from training")
+    ap.add_argument("--move-weight", "--sweep-weight", dest="move_weight", type=float, default=1.0,
+                    help="fit weight of head-motion frames (move/sweep) relative to still frames")
     ap.add_argument("--cols", type=int, default=4)
     ap.add_argument("--rows", type=int, default=3)
     ap.add_argument("--min-cutoff", type=float, default=1.0)
@@ -279,9 +312,11 @@ def main() -> None:
     session = args.session or (full or list(by_session))[-1]
     recs = by_session[session]
     F, T, G, S = cal_arrays(recs, args.recompute, args.settle)
-    if args.no_sweep and len(S):
-        keep = S != "sweep"
+    drop = [st for st, flag in (("sweep", args.no_sweep), ("move", args.no_move)) if flag]
+    if drop and len(S):
+        keep = ~np.isin(S, drop)
         F, T, G, S = F[keep], T[keep], G[keep], S[keep]
+    weights = sample_weights(S, args.move_weight)
     if len(F) < 6:
         sys.exit(f"session {session}: only {len(F)} usable frames")
     n_points = len({(round(x, 3), round(y, 3)) for (x, y), s in zip(T, S) if s != "sweep"})
@@ -290,23 +325,24 @@ def main() -> None:
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     session_runs = {k: v for k, v in runs.items() if v[0].get("cal_session") == session}
 
-    print(f"session {session}: {len(F)} frames, {n_points} points, sweep frames {int((S == 'sweep').sum())}, "
+    stage_counts = ", ".join(f"{k} {int((S == k).sum())}" for k in dict.fromkeys(S.tolist()))
+    print(f"session {session}: {len(F)} frames, {n_points} points ({stage_counts}), move weight {args.move_weight:g}, "
           f"features {'recomputed' if args.recompute else 'as logged'}, settle {args.settle or 'server'}")
     print(f"test runs for this session: {len(session_runs)}"
           + "".join(f"\n  {k}: live score {live_score(sorted(v, key=lambda r: r['t']), args)['overall'] * 100:.0f}%"
                     for k, v in session_runs.items() if any(r.get("live", {}).get("zone", -1) >= 0 for r in v)))
     print()
-    print(f"{'model':9} {'λ':>5} {'LOPO err':>9} {'LOPO acc':>9} {'sweep err':>10} {'test acc':>9}")
+    print(f"{'model':9} {'λ':>5} {'LOPO err':>9} {'LOPO acc':>9} {'head err':>10} {'test acc':>9}")
     results = []
     for name in models:
         spec = SPECS[name]
-        res = lopo(F, T, G, S, spec, lams, quad_on, args.cols, args.rows)
+        res = lopo(F, T, G, S, spec, lams, quad_on, args.cols, args.rows, weights)
         if not res:
             print(f"{name:9} (not enough points for LOPO)")
             continue
         lam = min(res, key=lambda k: res[k]["err"])
         r = res[lam]
-        fitted = fit_one(F, T, spec, lam, quad_on)
+        fitted = fit_one(F, T, spec, lam, quad_on, weights)
         tests = [replay_test(sorted(v, key=lambda x: x["t"]), fitted, args, args.recompute, n_points)
                  for v in session_runs.values()]
         test_acc = float(np.mean([t["overall"] for t in tests])) if tests else None
@@ -325,12 +361,19 @@ def main() -> None:
     for g, (e, a) in best[2]["per_group"].items():
         m = G == g
         x, y = T[m][0]
-        if S[m][0] == "point":
+        if S[m][0] != "sweep":
             per_zone[int(zones_of(np.array([[x, y]]), args.cols, args.rows)[0])] = a
     print(grid(per_zone, args.cols, args.rows))
     for t in best[3]:
         print("  zone test replay:")
         print(grid(t["per_zone"], args.cols, args.rows))
+        print("  where the test frames went (expected -> most common predicted):")
+        print(confusion(t["pred"], args.cols, args.rows))
+    for k, v in session_runs.items():
+        live = live_score(sorted(v, key=lambda r: r["t"]), args)
+        if any(z >= 0 for zs in live["pred"].values() for z in zs):
+            print(f"  live run {k} (what the user saw, {live['overall'] * 100:.0f}%):")
+            print(confusion(live["pred"], args.cols, args.rows))
     print(f"\nrun the server with it:  uv run --python 3.12 tracker/server.py --model {best[0]} --ridge {best[1]:g}")
 
 

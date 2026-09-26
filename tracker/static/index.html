@@ -77,7 +77,15 @@
   #calDot svg .bg { stroke: rgba(255,255,255,.10); }
   #calDot svg .fg { stroke: var(--accent2); stroke-linecap: round; transform: rotate(-90deg); transform-origin: center;
     transition: stroke-dashoffset .12s linear; }
-  #calDot.settling svg .fg { stroke: var(--warn); }
+  #calDot.phase-still svg .fg { stroke: var(--accent); }
+  #calDot.phase-move svg .fg { stroke: var(--accent2); }
+  #calDot.settling.sampling svg .fg { stroke: var(--warn); }
+  #calDot .lbl { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); white-space: nowrap;
+    font-size: 15px; font-weight: 600; letter-spacing: .04em; color: var(--accent); }
+  #calDot.phase-move .lbl { color: var(--accent2); }
+  #liveHint { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); font-size: 12px; color: var(--muted);
+    letter-spacing: .04em; pointer-events: none; opacity: 0; transition: opacity .3s; z-index: 4; }
+  #liveHint.show { opacity: .8; }
   #calHint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 70px); font-size: 44px; color: var(--accent);
     opacity: 0; transition: opacity .2s; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
   #calHint.show { opacity: 1; }
@@ -112,6 +120,7 @@
   <div id="grid"></div>
   <svg id="ring" viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="44"/><circle class="fg" cx="50" cy="50" r="44"/></svg>
   <div id="cursor"></div>
+  <div id="liveHint">small head movements are fine</div>
 
   <div id="hud">
     <div class="pill" id="facePill"><span class="dot"></span>face</div>
@@ -128,7 +137,7 @@
 
   <div class="overlay" id="welcome">
     <h1>Iris eye tracker</h1>
-    <p id="welcomeText">Sit centred in front of the webcam and look at each dot. While you look, gently move your head (small turns and nods): that teaches the tracker to handle head motion. Fullscreen first for the best calibration.</p>
+    <p id="welcomeText">Sit centred in front of the webcam. For each dot: first keep your head still and look at the dot with your eyes only, then keep looking at it while you gently turn and nod. Fullscreen first for the best calibration.</p>
     <div class="row">
       <button class="primary" id="btnStart">Start calibration <kbd>space</kbd></button>
       <button id="btnSkip">Skip</button>
@@ -139,7 +148,7 @@
 
   <div class="overlay" id="cal">
     <div id="calProgress"></div>
-    <div id="calDot"><div class="core"></div><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="44"/><circle class="fg" cx="50" cy="50" r="44"/></svg></div>
+    <div id="calDot"><div class="core"></div><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="44"/><circle class="fg" cx="50" cy="50" r="44"/></svg><div class="lbl"></div></div>
     <div id="calHint"></div>
     <div class="calText" id="calText">Look at the dot</div>
   </div>
@@ -173,7 +182,7 @@
   let calResolver = null;
   let test = null;
   // calibration flow, overridden by the server's config message
-  let calCfg = { frames: 75, settle: 0.4, hold: false, sweep: true, corners: false, sweepFrames: 120 };
+  let calCfg = { frames: 81, settle: 0.4, hold: false, sweep: false, corners: false, sweepFrames: 120, stillFrames: 36, moveFrames: 45 };
   let calProgressCb = null;
 
   // ---------- grid ----------
@@ -217,10 +226,11 @@
   function applyCalCfg(m) {
     if (m.cal_frames === undefined) return;
     calCfg = { frames: m.cal_frames, settle: m.cal_settle, hold: !!m.cal_hold, sweep: !!m.cal_sweep,
-               corners: !!m.cal_corners, sweepFrames: m.sweep_frames || 120 };
-    $("#welcomeText").textContent = calCfg.hold
+               corners: !!m.cal_corners, sweepFrames: m.sweep_frames || 120,
+               stillFrames: m.cal_still_frames || 0, moveFrames: m.cal_move_frames || 0 };
+    $("#welcomeText").textContent = (calCfg.hold || !calCfg.stillFrames)
       ? "Sit centred in front of the webcam, keep your head still, and follow the dot with your eyes. Fullscreen first for the best calibration."
-      : "Sit centred in front of the webcam and look at each dot. While you look, gently move your head (small turns and nods): that teaches the tracker to handle head motion. Fullscreen first for the best calibration.";
+      : "Sit centred in front of the webcam. For each dot: first keep your head still and look at the dot with your eyes only, then keep looking at it while you gently turn and nod. Fullscreen first for the best calibration.";
   }
   function setCalPts(n) { $("#calPts").textContent = n; $("#calDotHud").className = "dot " + (n >= cols * rows ? "on" : n > 0 ? "warn" : ""); }
 
@@ -244,6 +254,7 @@
       clearTimeout(blinkTimer); blinkTimer = setTimeout(() => $("#blinkPill").classList.remove("flash"), 500);
       if (mode === "live" && m.zone >= 0) select(m.zone, "blink");
     }
+    $("#liveHint").classList.toggle("show", mode === "live" && !!m.face && m.zone >= 0);
     if (mode === "live") updateDwell(m);
     if (mode === "test" && test) test.sample(m);
     highlight(m.zone);
@@ -296,7 +307,7 @@
     return new Promise((resolve) => {
       const done = (m) => { calProgressCb = null; resolve(m); };
       calResolver = done;
-      calProgressCb = (p) => { calDotEl.classList.toggle("settling", !!p.settling); setCalRing(p.count / p.n); if (onProgress) onProgress(p.count / p.n); };
+      calProgressCb = (p) => { calDotEl.classList.toggle("settling", !!p.settling); setCalRing(p.count / p.n); if (onProgress) onProgress(p.count / p.n, p); };
       send(msg);
       const ms = (calCfg.settle + frames / 30 * 2 + 4) * 1000;
       setTimeout(() => { if (calResolver === done) { calResolver = null; done(null); } }, ms);
@@ -309,8 +320,17 @@
     send({ type: "cal_reset" }); await sleep(150); calResolver = null;
     const targets = calTargets(), dot = calDotEl, prog = $("#calProgress"), hint = $("#calHint");
     const steps = targets.length + (calCfg.sweep ? 1 : 0);
+    const twoPhase = !calCfg.hold && calCfg.stillFrames > 0;
     const holdTxt = "Look at the dot";
-    const moveTxt = "Look at the dot and <b>gently move your head</b> (small turns and nods)";
+    const stillTxt = "<b>Keep your head still</b> (facing the middle) and look at the dot with your eyes";
+    const moveTxt = "Now <b>gently turn and nod</b> while looking at the dot";
+    const lbl = dot.querySelector(".lbl");
+    const setPhase = (ph, count) => {
+      dot.classList.toggle("phase-still", ph === "still"); dot.classList.toggle("phase-move", ph === "move");
+      lbl.textContent = ph === "still" ? "head still" : ph === "move" ? "↔ turn · ↕ nod" : "";
+      const txt = ph === "move" ? moveTxt : twoPhase ? stillTxt : holdTxt;
+      $("#calText").innerHTML = `${txt} &nbsp;·&nbsp; <b>${count}</b>`;
+    };
     dot.classList.toggle("hold", calCfg.hold);
     prog.innerHTML = Array.from({ length: steps }, () => "<i></i>").join("");
     let last = null;
@@ -319,13 +339,18 @@
       prog.children[i].className = "cur";
       dot.classList.remove("ok", "sampling"); setCalRing(0);
       dot.style.left = (t.x * 100) + "%"; dot.style.top = (t.y * 100) + "%";
-      $("#calText").innerHTML = `${calCfg.hold ? holdTxt : moveTxt} &nbsp;·&nbsp; <b>${i + 1} / ${steps}</b>`;
-      // hold: wait for the eyes to land; head-tolerant: the server discards the first `settle` s itself
-      await sleep(calCfg.hold ? 700 : 250);
+      const count = `${i + 1} / ${steps}`;
+      setPhase(twoPhase ? "still" : "point", count);
+      // hold: wait for the eyes to land; two-phase: the server discards the first `settle` s itself
+      await sleep(calCfg.hold ? 700 : 150);
       let res = null;
       for (let attempt = 0; attempt < 2 && !res; attempt++) {
         dot.classList.add("sampling");
-        res = await capture({ type: "cal", x: t.x, y: t.y }, calCfg.frames);
+        setPhase(twoPhase ? "still" : "point", count);
+        let shown = twoPhase ? "still" : "point";
+        res = await capture({ type: "cal", x: t.x, y: t.y }, calCfg.frames, (f, p) => {
+          if (p.phase && p.phase !== shown && p.phase !== "point") { shown = p.phase; setPhase(p.phase, count); }
+        });
         if (!res || res.count < Math.min(8, calCfg.frames / 3)) {
           $("#calText").innerHTML = `<b>No face / eyes closed</b> — retrying`; dot.classList.remove("sampling"); res = null; setCalRing(0); await sleep(600);
         }
@@ -333,9 +358,10 @@
       }
       last = res || last;
       dot.classList.add("ok"); prog.children[i].className = "done";
-      await sleep(150);
+      await sleep(100);
       if (mode !== "cal") return;
     }
+    setPhase("point", ""); dot.classList.remove("phase-still", "phase-move");
     if (calCfg.sweep) {
       const i = targets.length;
       prog.children[i].className = "cur";

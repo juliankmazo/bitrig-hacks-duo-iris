@@ -11,8 +11,8 @@
     uv run --python 3.12 tracker/server.py --mode head     # nose-pointer fallback
     uv run --python 3.12 tracker/server.py --cal-hold      # old still-head calibration (24 frames/point)
 
-Calibration is head-tolerant by default: ~2.5 s per point while the user gently moves the head, plus a
-4 s "head sweep" on a central dot. Every calibration / zone-test frame is logged to cal_samples.jsonl /
+Calibration is two-phase by default: per dot ~1.2 s with the head still (eyes only) then ~1.5 s of gentle
+head turns/nods while fixating, so the model sees both "eyes do the work" and "head does the work". Every calibration / zone-test frame is logged to cal_samples.jsonl /
 test_samples.jsonl so tune.py can compare models offline.
 
 WebSocket ws://127.0.0.1:8765  (see README "Shared contract"; gaze messages add x, y, conf)
@@ -74,13 +74,20 @@ class CalRequest:
     n: int = 90
     settle: float = 0.4
     timeout: float = 7.4
-    stage: str = "point"            # point | sweep
+    stage: str = "point"            # point | sweep (request kind)
+    still_n: int = 0                # two-phase dots: first still_n used frames are "still", the rest "move"
     point: int = 0                  # group id within the calibration session
     started: float = 0.0
     count: int = 0
     frames: int = 0
     future: asyncio.Future | None = None
     loop: asyncio.AbstractEventLoop | None = None
+
+    def phase(self) -> str:
+        """Stage label for the next captured frame."""
+        if self.stage == "point" and self.still_n > 0:
+            return "still" if self.count < self.still_n else "move"
+        return self.stage
 
 
 class Recorder:
@@ -137,8 +144,9 @@ class Hub:
         self.camera = "none"
         self.cols, self.rows = 4, 3
         # calibration flow settings (sent to the UI in `config`)
-        self.cal_frames, self.cal_settle, self.cal_hold = 75, 0.4, False
-        self.sweep_frames, self.cal_sweep, self.cal_corners = 120, True, False
+        self.cal_frames, self.cal_settle, self.cal_hold = 81, 0.4, False
+        self.cal_still_frames, self.cal_move_frames = 36, 45     # two-phase dots (0 still = single phase)
+        self.sweep_frames, self.cal_sweep, self.cal_corners = 0, False, False
         self.model_name = "none"
         # recording
         self.recorder = Recorder()
@@ -173,6 +181,7 @@ class Hub:
                 "camera": self.camera, "cal_points": self.cal_points,
                 "cal_frames": self.cal_frames, "cal_settle": self.cal_settle, "cal_hold": self.cal_hold,
                 "cal_sweep": self.cal_sweep, "cal_corners": self.cal_corners, "sweep_frames": self.sweep_frames,
+                "cal_still_frames": self.cal_still_frames, "cal_move_frames": self.cal_move_frames,
                 "model": self.model_name}
 
 
@@ -325,18 +334,19 @@ def camera_loop(args, hub: Hub, model: CalibrationModel, est: GazeEstimator) -> 
             elapsed = t0 - req.started
             eyes_open = not (blink_l > 0.5 and blink_r > 0.5)
             used = feats is not None and eyes_open and elapsed >= req.settle
+            stage = req.phase()
             if used:
-                model.add(feats, req.x, req.y, req.point, req.stage)
+                model.add(feats, req.x, req.y, req.point, stage)
                 req.count += 1
             req.frames += 1
             payload = frame_payload(feats, key_norm, matrix, blend, (w, h))
             hub.recorder.write(CAL_SAMPLES, {
-                "kind": "cal", "session": hub.session, "t": round(t0, 4), "point": req.point, "stage": req.stage,
+                "kind": "cal", "session": hub.session, "t": round(t0, 4), "point": req.point, "stage": stage,
                 "tx": req.x, "ty": req.y, "zone": req.zone, "since": round(elapsed, 4), "used": used,
                 "hold": hub.cal_hold, **payload})
             if req.frames % 3 == 0 or req.count >= req.n:
-                hub.emit({"type": "cal_progress", "zone": req.zone, "stage": req.stage, "count": req.count,
-                          "n": req.n, "settling": elapsed < req.settle})
+                hub.emit({"type": "cal_progress", "zone": req.zone, "stage": req.stage, "phase": req.phase(),
+                          "count": req.count, "n": req.n, "still_n": req.still_n, "settling": elapsed < req.settle})
             if req.count >= req.n or elapsed >= req.timeout:
                 hub.cal_request = None
                 hub.recorder.flush()
@@ -411,8 +421,8 @@ def synthetic_loop(hub: Hub) -> None:
                 req.count += 1
             req.frames += 1
             if req.frames % 3 == 0 or req.count >= req.n:
-                hub.emit({"type": "cal_progress", "zone": req.zone, "stage": req.stage, "count": req.count,
-                          "n": req.n, "settling": elapsed < req.settle})
+                hub.emit({"type": "cal_progress", "zone": req.zone, "stage": req.stage, "phase": req.phase(),
+                          "count": req.count, "n": req.n, "still_n": req.still_n, "settling": elapsed < req.settle})
             if req.count >= req.n:
                 hub.cal_request = None
                 hub.cal_points = hub.cols * hub.rows
@@ -492,8 +502,13 @@ class Server:
             zone = raw_zone(x, y, cols, rows)
         hub = self.hub
         stage = "sweep" if msg.get("stage") == "sweep" else "point"
-        default_n = hub.sweep_frames if stage == "sweep" else hub.cal_frames
+        default_n = (hub.sweep_frames or 120) if stage == "sweep" else hub.cal_frames
         n = max(1, int(msg.get("frames") or default_n))
+        still_n = 0
+        if stage == "point" and hub.cal_still_frames > 0 and hub.cal_move_frames > 0:
+            # two-phase dot; a `frames` override keeps the still:move ratio
+            still_n = int(msg.get("still_frames")
+                          or round(n * hub.cal_still_frames / (hub.cal_still_frames + hub.cal_move_frames)))
         settle = float(msg.get("settle", hub.cal_settle))
         timeout = settle + n / 30 * 2.0 + 1.0     # blinks / lost face frames don't count
         async with self.cal_lock:
@@ -501,7 +516,7 @@ class Server:
             point = hub.next_point
             hub.next_point += 1
             hub.cal_request = CalRequest(x=x, y=y, zone=zone, n=n, settle=settle, timeout=timeout, stage=stage,
-                                         point=point, future=fut, loop=self.loop)
+                                         still_n=still_n, point=point, future=fut, loop=self.loop)
             try:
                 result = await asyncio.wait_for(fut, timeout=timeout + 3.0)
             except asyncio.TimeoutError:
@@ -645,11 +660,16 @@ def main() -> None:
     ap.add_argument("--model", choices=["auto", *SPECS], default="auto",
                     help="calibration model; auto = best leave-one-point-out candidate")
     ap.add_argument("--cal-hold", action="store_true",
-                    help="old still-head calibration: 24 frames/point, 0.35 s settle, corner points, no sweep")
-    ap.add_argument("--cal-frames", type=int, default=None, help="frames per calibration point (default 75 ≈ 2.5 s, whole flow ≈ 49 s; 24 with --cal-hold)")
+                    help="old single-phase still-head calibration: 24 frames/point, 0.35 s settle, corner points")
+    ap.add_argument("--cal-still-frames", type=int, default=36, help="phase A per dot: head still, eyes only (~1.2 s)")
+    ap.add_argument("--cal-move-frames", type=int, default=45, help="phase B per dot: gentle head turns/nods (~1.5 s)")
+    ap.add_argument("--cal-frames", type=int, default=None,
+                    help="total frames per dot (default still+move = 81; 24 with --cal-hold); two-phase keeps the ratio")
     ap.add_argument("--cal-settle", type=float, default=None, help="seconds discarded after each dot appears (0.4)")
-    ap.add_argument("--sweep-frames", type=int, default=120, help="frames in the head-sweep stage (~4 s)")
-    ap.add_argument("--no-sweep", action="store_true", help="skip the head-sweep stage")
+    ap.add_argument("--sweep-frames", type=int, default=0, help="optional final central head sweep (e.g. 120 ≈ 4 s); 0 = off")
+    ap.add_argument("--no-sweep", action="store_true", help="force the head sweep off")
+    ap.add_argument("--move-weight", "--sweep-weight", dest="move_weight", type=float, default=1.0,
+                    help="fit weight of head-motion frames (move/sweep) relative to still frames")
     ap.add_argument("--cal-corners", action="store_true", help="add the 4 corner points (default only with --cal-hold)")
     ap.add_argument("--no-record", action="store_true", help="don't log cal/test frames to *_samples.jsonl")
     ap.add_argument("--ws-port", type=int, default=WS_PORT)
@@ -661,22 +681,29 @@ def main() -> None:
     hub.mode = args.mode
     hub.cols, hub.rows = args.cols, args.rows
     hub.cal_hold = args.cal_hold
-    hub.cal_frames = args.cal_frames or (24 if args.cal_hold else 75)
+    if args.cal_hold:
+        hub.cal_still_frames = hub.cal_move_frames = 0
+        hub.cal_frames = args.cal_frames or 24
+    else:
+        hub.cal_still_frames, hub.cal_move_frames = args.cal_still_frames, args.cal_move_frames
+        hub.cal_frames = args.cal_frames or (args.cal_still_frames + args.cal_move_frames)
     hub.cal_settle = args.cal_settle if args.cal_settle is not None else (0.35 if args.cal_hold else 0.4)
-    hub.cal_sweep = not (args.no_sweep or args.cal_hold)
+    hub.cal_sweep = args.sweep_frames > 0 and not (args.no_sweep or args.cal_hold)
     hub.cal_corners = args.cal_corners or args.cal_hold
     hub.sweep_frames = args.sweep_frames
     hub.recorder.enabled = not (args.no_record or args.no_camera)
-    model = CalibrationModel(mode=args.mode, ridge=args.ridge, cols=args.cols, rows=args.rows, model=args.model) \
+    model = CalibrationModel(mode=args.mode, ridge=args.ridge, cols=args.cols, rows=args.rows, model=args.model,
+                             move_weight=args.move_weight) \
         if args.fresh or args.no_camera else CalibrationModel.load(CAL_PATH, args.mode, args.ridge, args.cols, args.rows,
-                                                                    model=args.model)
+                                                                    model=args.model, move_weight=args.move_weight)
     hub.cal_points = model.n_points if model.ready else 0
     hub.model_name = model.name
     hub.next_point = max(model.groups, default=-1) + 1   # new points extend a loaded calibration
     if model.ready:
         print(f"[cal] loaded {CAL_PATH.name}: {model.n_points} points, {len(model.samples)} samples, "
               f"model {model.name}", flush=True)
-    print(f"[cal] flow: {'hold (still head)' if hub.cal_hold else 'head-tolerant'}, {hub.cal_frames} frames/point, "
+    flow = "hold (still head)" if hub.cal_hold else f"two-phase {hub.cal_still_frames} still + {hub.cal_move_frames} move"
+    print(f"[cal] flow: {flow}, {hub.cal_frames} frames/point, move weight {args.move_weight:g}, "
           f"settle {hub.cal_settle}s, sweep {'on' if hub.cal_sweep else 'off'}, corners {'on' if hub.cal_corners else 'off'}, "
           f"model {args.model}", flush=True)
     est = GazeEstimator(model, min_cutoff=args.min_cutoff, beta=args.beta,

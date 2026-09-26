@@ -65,12 +65,22 @@
   /* overlays */
   .overlay { position: absolute; inset: 0; background: rgba(4,6,10,.96); display: none; z-index: 10; }
   .overlay.show { display: block; }
-  #calDot { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; background: #fff;
-    box-shadow: 0 0 0 10px rgba(255,255,255,.12), 0 0 40px 8px rgba(110,168,255,.5);
-    transition: left .45s cubic-bezier(.4,0,.2,1), top .45s cubic-bezier(.4,0,.2,1), transform .25s, background .25s; }
-  #calDot::after { content: ""; position: absolute; inset: 11px; border-radius: 50%; background: var(--accent); }
-  #calDot.sampling { transform: scale(.55); }
-  #calDot.ok { background: var(--accent2); }
+  #calDot { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+    transition: left .45s cubic-bezier(.4,0,.2,1), top .45s cubic-bezier(.4,0,.2,1); }
+  #calDot .core { position: absolute; inset: 0; border-radius: 50%; background: #fff;
+    box-shadow: 0 0 0 10px rgba(255,255,255,.12), 0 0 40px 8px rgba(110,168,255,.5); transition: transform .25s, background .25s; }
+  #calDot .core::after { content: ""; position: absolute; inset: 11px; border-radius: 50%; background: var(--accent); }
+  #calDot.sampling.hold .core { transform: scale(.55); }
+  #calDot.ok .core { background: var(--accent2); }
+  #calDot svg { position: absolute; left: -25px; top: -25px; width: 84px; height: 84px; pointer-events: none; }
+  #calDot svg circle { fill: none; stroke-width: 5; }
+  #calDot svg .bg { stroke: rgba(255,255,255,.10); }
+  #calDot svg .fg { stroke: var(--accent2); stroke-linecap: round; transform: rotate(-90deg); transform-origin: center;
+    transition: stroke-dashoffset .12s linear; }
+  #calDot.settling svg .fg { stroke: var(--warn); }
+  #calHint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 70px); font-size: 44px; color: var(--accent);
+    opacity: 0; transition: opacity .2s; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
+  #calHint.show { opacity: 1; }
   .calText { position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); color: var(--muted); text-align: center; font-size: 15px; }
   .calText b { color: var(--text); }
   #calProgress { position: absolute; top: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
@@ -118,7 +128,7 @@
 
   <div class="overlay" id="welcome">
     <h1>Iris eye tracker</h1>
-    <p>Sit centred in front of the webcam, keep your head still, and follow the dot with your eyes. Fullscreen first for the best calibration.</p>
+    <p id="welcomeText">Sit centred in front of the webcam and look at each dot. While you look, gently move your head (small turns and nods): that teaches the tracker to handle head motion. Fullscreen first for the best calibration.</p>
     <div class="row">
       <button class="primary" id="btnStart">Start calibration <kbd>space</kbd></button>
       <button id="btnSkip">Skip</button>
@@ -129,7 +139,8 @@
 
   <div class="overlay" id="cal">
     <div id="calProgress"></div>
-    <div id="calDot"></div>
+    <div id="calDot"><div class="core"></div><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="44"/><circle class="fg" cx="50" cy="50" r="44"/></svg></div>
+    <div id="calHint"></div>
     <div class="calText" id="calText">Look at the dot</div>
   </div>
 
@@ -161,6 +172,9 @@
   let dwell = { zone: -1, since: 0, cooldownUntil: 0 };
   let calResolver = null;
   let test = null;
+  // calibration flow, overridden by the server's config message
+  let calCfg = { frames: 90, settle: 0.4, hold: false, sweep: true, corners: false, sweepFrames: 120 };
+  let calProgressCb = null;
 
   // ---------- grid ----------
   function buildGrid() {
@@ -193,12 +207,21 @@
     ws.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.type === "gaze") onGaze(m);
-      else if (m.type === "config") { if (m.cols !== cols || m.rows !== rows) { cols = m.cols; rows = m.rows; buildGrid(); } setCalPts(m.cal_points); }
+      else if (m.type === "config") { if (m.cols !== cols || m.rows !== rows) { cols = m.cols; rows = m.rows; buildGrid(); } setCalPts(m.cal_points); applyCalCfg(m); }
+      else if (m.type === "cal_progress") { if (calProgressCb) calProgressCb(m); }
       else if (m.type === "status") { $("#fps").textContent = m.fps.toFixed(0); $("#lat").textContent = m.latency_ms.toFixed(0); setCalPts(m.cal_points); }
       else if (m.type === "cal_done") { if (calResolver) { const r = calResolver; calResolver = null; r(m); } setCalPts(m.points); }
     };
   }
   const send = (o) => { if (connected) ws.send(JSON.stringify(o)); };
+  function applyCalCfg(m) {
+    if (m.cal_frames === undefined) return;
+    calCfg = { frames: m.cal_frames, settle: m.cal_settle, hold: !!m.cal_hold, sweep: !!m.cal_sweep,
+               corners: !!m.cal_corners, sweepFrames: m.sweep_frames || 120 };
+    $("#welcomeText").textContent = calCfg.hold
+      ? "Sit centred in front of the webcam, keep your head still, and follow the dot with your eyes. Fullscreen first for the best calibration."
+      : "Sit centred in front of the webcam and look at each dot. While you look, gently move your head (small turns and nods): that teaches the tracker to handle head motion. Fullscreen first for the best calibration.";
+  }
   function setCalPts(n) { $("#calPts").textContent = n; $("#calDotHud").className = "dot " + (n >= cols * rows ? "on" : n > 0 ? "warn" : ""); }
 
   // ---------- gaze ----------
@@ -259,37 +282,81 @@
   function calTargets() {
     const t = [];
     for (let z = 0; z < cols * rows; z++) t.push(zoneCenter(z));
-    // extra points near the corners so the regression has to extrapolate less
-    t.push({ x: .04, y: .06 }, { x: .96, y: .06 }, { x: .04, y: .94 }, { x: .96, y: .94 });
+    // extra points near the corners so the regression has to extrapolate less (--cal-hold / --cal-corners)
+    if (calCfg.corners) t.push({ x: .04, y: .06 }, { x: .96, y: .06 }, { x: .04, y: .94 }, { x: .96, y: .94 });
     return t;
   }
+  const calDotEl = $("#calDot"), calFg = calDotEl.querySelector(".fg");
+  calFg.style.strokeDasharray = CIRC;
+  function setCalRing(frac) { calFg.style.strokeDashoffset = CIRC * (1 - Math.max(0, Math.min(1, frac))); }
+  const SWEEP_HINTS = ["← turn left", "turn right →", "↑ look up (nod)", "↓ nod down"];
+
+  // one capture: resolves with the cal_done message, or null on timeout
+  function capture(msg, frames, onProgress) {
+    return new Promise((resolve) => {
+      const done = (m) => { calProgressCb = null; resolve(m); };
+      calResolver = done;
+      calProgressCb = (p) => { calDotEl.classList.toggle("settling", !!p.settling); setCalRing(p.count / p.n); if (onProgress) onProgress(p.count / p.n); };
+      send(msg);
+      const ms = (calCfg.settle + frames / 30 * 2 + 4) * 1000;
+      setTimeout(() => { if (calResolver === done) { calResolver = null; done(null); } }, ms);
+    });
+  }
+
   async function runCalibration() {
     if (!connected) { toast("Tracker not connected"); return; }
     mode = "cal"; show("#cal");
     send({ type: "cal_reset" }); await sleep(150); calResolver = null;
-    const targets = calTargets(), dot = $("#calDot"), prog = $("#calProgress");
-    prog.innerHTML = targets.map(() => "<i></i>").join("");
+    const targets = calTargets(), dot = calDotEl, prog = $("#calProgress"), hint = $("#calHint");
+    const steps = targets.length + (calCfg.sweep ? 1 : 0);
+    const holdTxt = "Look at the dot";
+    const moveTxt = "Look at the dot and <b>gently move your head</b> (small turns and nods)";
+    dot.classList.toggle("hold", calCfg.hold);
+    prog.innerHTML = Array.from({ length: steps }, () => "<i></i>").join("");
+    let last = null;
     for (let i = 0; i < targets.length; i++) {
       const t = targets[i];
       prog.children[i].className = "cur";
-      dot.className = ""; dot.style.left = (t.x * 100) + "%"; dot.style.top = (t.y * 100) + "%";
-      $("#calText").innerHTML = `Look at the dot &nbsp;·&nbsp; <b>${i + 1} / ${targets.length}</b>`;
-      await sleep(700);
+      dot.classList.remove("ok", "sampling"); setCalRing(0);
+      dot.style.left = (t.x * 100) + "%"; dot.style.top = (t.y * 100) + "%";
+      $("#calText").innerHTML = `${calCfg.hold ? holdTxt : moveTxt} &nbsp;·&nbsp; <b>${i + 1} / ${steps}</b>`;
+      // hold: wait for the eyes to land; head-tolerant: the server discards the first `settle` s itself
+      await sleep(calCfg.hold ? 700 : 250);
       let res = null;
       for (let attempt = 0; attempt < 2 && !res; attempt++) {
         dot.classList.add("sampling");
-        res = await new Promise((resolve) => {
-          calResolver = resolve;
-          send({ type: "cal", x: t.x, y: t.y });
-          setTimeout(() => { if (calResolver === resolve) { calResolver = null; resolve(null); } }, 7000);
-        });
-        if (!res || res.count < 8) { $("#calText").innerHTML = `<b>No face / eyes closed</b> — hold still, retrying`; dot.classList.remove("sampling"); res = null; await sleep(600); }
+        res = await capture({ type: "cal", x: t.x, y: t.y }, calCfg.frames);
+        if (!res || res.count < Math.min(8, calCfg.frames / 3)) {
+          $("#calText").innerHTML = `<b>No face / eyes closed</b> — retrying`; dot.classList.remove("sampling"); res = null; setCalRing(0); await sleep(600);
+        }
+        if (mode !== "cal") return;
       }
+      last = res || last;
       dot.classList.add("ok"); prog.children[i].className = "done";
-      await sleep(180);
+      await sleep(150);
       if (mode !== "cal") return;
     }
-    hide("#cal"); mode = "live"; toast("Calibrated — live");
+    if (calCfg.sweep) {
+      const i = targets.length;
+      prog.children[i].className = "cur";
+      dot.classList.remove("ok", "sampling"); setCalRing(0);
+      dot.style.left = "50%"; dot.style.top = "50%";
+      $("#calText").innerHTML = `Last step: <b>keep your eyes on the dot</b> and slowly turn your head left, right, up, down &nbsp;·&nbsp; <b>${i + 1} / ${steps}</b>`;
+      hint.textContent = "keep looking at the dot"; hint.classList.add("show");
+      await sleep(1200);
+      if (mode !== "cal") { hint.classList.remove("show"); return; }
+      dot.classList.add("sampling");
+      const res = await capture({ type: "cal", x: .5, y: .5, stage: "sweep" }, calCfg.sweepFrames,
+        (f) => { hint.textContent = SWEEP_HINTS[Math.min(3, Math.floor(f * 4))]; });
+      hint.classList.remove("show");
+      last = res || last;
+      dot.classList.add("ok"); prog.children[i].className = "done";
+      await sleep(150);
+      if (mode !== "cal") return;
+    }
+    hide("#cal"); mode = "live";
+    const acc = last && last.lopo_acc != null ? ` · held-out ${(last.lopo_acc * 100).toFixed(0)}%` : "";
+    toast(`Calibrated — live${last && last.model ? " · " + last.model : ""}${acc}`);
   }
 
   // ---------- test ----------
@@ -308,13 +375,15 @@
       toast("Zone test: look at the purple cell");
       for (const z of order) {
         t.zone = z; t.hits = 0; t.total = 0; t.since = performance.now();
+        send({ type: "test_zone", zone: z, i: order.indexOf(z), n, hold_s: HOLD / 1000, window_s: WINDOW / 1000 });
         cells[z].classList.add("target");
         await sleep(HOLD);
         cells[z].classList.remove("target");
         perZone[z] = t.total ? t.hits / t.total : 0;
-        if (mode !== "test") return;
+        if (mode !== "test") { send({ type: "test_zone", zone: -1 }); return; }
       }
       t.zone = -1;
+      send({ type: "test_zone", zone: -1 });
       const overall = perZone.reduce((a, b) => a + b, 0) / n;
       showResults(perZone, overall);
       send({ type: "test_result", overall: +overall.toFixed(4), per_zone: perZone.map(v => +v.toFixed(3)),
@@ -332,7 +401,7 @@
       d.textContent = (v * 100).toFixed(0) + "%"; d.title = "zone " + i; rg.appendChild(d);
     });
     $("#resScore").textContent = (overall * 100).toFixed(0) + "%";
-    $("#resDetail").textContent = `${perZone.length} zones · 2 s each · scored on the last 1.5 s · logged to tracker/test_results.jsonl`;
+    $("#resDetail").textContent = `${perZone.length} zones · 2 s each · scored on the last 1.5 s · logged to tracker/test_results.jsonl (+ frames in test_samples.jsonl)`;
     show("#results");
   }
 

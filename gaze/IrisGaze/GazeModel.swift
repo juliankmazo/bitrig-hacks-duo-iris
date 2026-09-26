@@ -25,7 +25,6 @@ final class GazeModel {
     static let cells = GridCell.all
     static let dwellDuration: TimeInterval = 1.0
     static let cooldown: TimeInterval = 0.8
-    static let settle: Duration = .milliseconds(700)
     static let logger = Logger(subsystem: "dev.julian.irisgaze", category: "gaze")
     static let forcedScreen = UserDefaults.standard.string(forKey: "forceScreen").flatMap(Screen.init(rawValue:))
     static let launchBackend = UserDefaults.standard.string(forKey: "backend").flatMap(Backend.init(rawValue:))
@@ -61,6 +60,11 @@ final class GazeModel {
     private(set) var calibratingZone: Int?
     private(set) var calibrationProgress: Double = 0
     private(set) var isCalibrating = false
+    enum CalibrationPhase { case settle, sampling }
+    private(set) var calibrationPhase: CalibrationPhase?
+    private(set) var calibrationMessage: String?
+    /// Debug overlay: live predicted point + the 12 calibration medians projected through the fit.
+    var showDebug = false
 
     @ObservationIgnored var layout: GridLayout? {
         didSet { simulated.tourPoints = layout?.normalizedCenters ?? [] }
@@ -121,7 +125,7 @@ final class GazeModel {
         if isStarted, next == backend { return }
         source.stop()
         backend = next
-        calibrator.clearCentroids()
+        calibrator.clear()
         source.start()
         isStarted = true
     }
@@ -179,7 +183,7 @@ final class GazeModel {
             fpsWindowStart = now
         }
 
-        let z = calibrator.process(s.point) { [layout] p in layout?.zone(forNormalized: p) }
+        let z = calibrator.process(s, layout: layout)
         if zone != z { zone = z }
         guard screen == .grid, !needsCalibration else {
             dwellProgress = 0
@@ -224,44 +228,125 @@ final class GazeModel {
 
     // MARK: Calibration
 
-    func startCalibration() {
-        calibrationTask?.cancel()
-        calibrator.clearCentroids()
-        isCalibrating = true
-        screen = .calibration
-        calibrationTask = Task { [weak self] in
-            guard let self else { return }
-            for k in 0..<GazeCalibrator.zoneCount {
-                guard !Task.isCancelled else { return }
-                self.calibratingZone = k
-                self.calibrationProgress = 0
-                self.simulated.pinnedTourTarget = self.layout?.normalizedCenters[safe: k]
-                // Settle: let the eyes land on the dot.
-                try? await Task.sleep(for: Self.settle)
-                var samples: [CGPoint] = []
-                let started = Date.now
-                // ~30 samples over ~1.5 s (20 Hz); give up after 3 s if the face is lost.
-                while samples.count < 30, Date.now.timeIntervalSince(started) < 3, !Task.isCancelled {
-                    if let p = self.source.sample.point { samples.append(p) }
-                    self.calibrationProgress = Double(samples.count) / 30
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                self.calibrator.setCentroid(zone: k, samples: samples)
-                Self.logger.notice("cal zone \(k) n=\(samples.count)")
-            }
-            self.finishCalibration()
+    /// Snake order: consecutive targets are neighbours.
+    static let calibrationOrder = [0, 1, 2, 3, 7, 6, 5, 4, 8, 9, 10, 11]
+    static let settleSeconds: TimeInterval = 1.0
+    static let sampleSeconds: TimeInterval = 1.5
+    static let maxRetries = 2
+
+    /// Max per-feature std during a fixation before the cell is re-asked.
+    private var spreadLimits: [Double] {
+        switch backend {
+        case .mac: [0.025, 0.045, 0.04, 0.04, .infinity]  // eye_x, eye_y, yaw, pitch, roll
+        default: [0.04, 0.04]
         }
     }
 
-    /// "Test": leave calibration and go try the grid.
-    func test() {
+    func startCalibration() {
         calibrationTask?.cancel()
-        finishCalibration()
+        calibrator.clear()
+        isCalibrating = true
+        showDebug = false
+        screen = .calibration
+        calibrationTask = Task { [weak self] in
+            guard let self else { return }
+            for k in Self.calibrationOrder {
+                var attempt = 0
+                while !Task.isCancelled {
+                    self.calibratingZone = k
+                    self.simulated.pinnedTourTarget = self.layout?.normalizedCenters[safe: k]
+                    let result = await self.collect(zone: k)
+                    if Task.isCancelled { return }
+                    if let median = result.median, (result.ok || attempt >= Self.maxRetries) {
+                        self.calibrator.setMedian(zone: k, median)
+                        Self.logger.notice("cal zone \(k) n=\(result.count) ok=\(result.ok) median=\(median.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public) std=\(result.std.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public)")
+                        break
+                    }
+                    attempt += 1
+                    if attempt > 5 {   // no usable data at all: skip this cell, fit with the rest
+                        Self.logger.notice("cal zone \(k) skipped")
+                        break
+                    }
+                    self.calibrationMessage = result.reason
+                    Self.logger.notice("cal zone \(k) rejected: \(result.reason, privacy: .public)")
+                    try? await Task.sleep(for: .milliseconds(700))
+                }
+            }
+            if let layout = self.layout { self.calibrator.fit(layout: layout) }
+            self.finishCalibration()
+            self.showDebug = true   // show the fit right away so the error is visible
+        }
+    }
+
+    private struct Collection {
+        var median: [Double]?
+        var std: [Double] = []
+        var count = 0
+        var ok = false
+        var reason = ""
+    }
+
+    /// Settle, then sample; median per feature; flag large spread or lost face.
+    private func collect(zone k: Int) async -> Collection {
+        calibrationPhase = .settle
+        let settleStart = Date.now
+        while Date.now.timeIntervalSince(settleStart) < Self.settleSeconds, !Task.isCancelled {
+            calibrationProgress = Date.now.timeIntervalSince(settleStart) / Self.settleSeconds
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        calibrationMessage = nil
+        calibrationPhase = .sampling
+        var samples: [[Double]] = []
+        var frames = 0, lost = 0
+        var last: GazeSample?
+        let start = Date.now
+        while Date.now.timeIntervalSince(start) < Self.sampleSeconds, !Task.isCancelled {
+            let s = source.sample
+            if s != last {
+                last = s
+                frames += 1
+                if !s.faceDetected { lost += 1 }
+                else if !s.blink, let f = s.featureVector { samples.append(f) }
+            }
+            calibrationProgress = Date.now.timeIntervalSince(start) / Self.sampleSeconds
+            try? await Task.sleep(for: .milliseconds(15))
+        }
+        calibrationPhase = nil
+        guard samples.count >= 8, let d = samples.first?.count else {
+            return Collection(count: samples.count, reason: "Face lost — look at the cell again")
+        }
+        let median = (0..<d).map { j -> Double in
+            let v = samples.map { $0[j] }.sorted()
+            return v[v.count / 2]
+        }
+        let std = (0..<d).map { j -> Double in
+            let v = samples.map { $0[j] }
+            let m = v.reduce(0, +) / Double(v.count)
+            return (v.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(v.count)).squareRoot()
+        }
+        let limits = spreadLimits
+        let shaky = zip(std, limits).contains { $0 > $1 }
+        let lostTooMuch = frames > 0 && Double(lost) / Double(frames) > 0.3
+        var c = Collection(median: median, std: std, count: samples.count, ok: !shaky && !lostTooMuch)
+        c.reason = lostTooMuch ? "Face lost — look at the cell again" : "Too shaky — hold your gaze steady"
+        return c
+    }
+
+    /// "Test": leave calibration and toggle the debug overlay (live predicted point + projected medians).
+    func test() {
+        if isCalibrating {
+            calibrationTask?.cancel()
+            finishCalibration()
+            showDebug = true
+        } else {
+            showDebug.toggle()
+        }
     }
 
     func resetCalibration() {
         calibrationTask?.cancel()
-        calibrator.clearCentroids()
+        calibrator.clear()
+        showDebug = false
         finishCalibration()
     }
 
@@ -271,6 +356,8 @@ final class GazeModel {
         isCalibrating = false
         calibratingZone = nil
         calibrationProgress = 0
+        calibrationPhase = nil
+        calibrationMessage = nil
         simulated.pinnedTourTarget = nil
         screen = .grid
     }

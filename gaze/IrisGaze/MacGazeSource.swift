@@ -25,6 +25,8 @@ final class MacGazeSource: GazeSource {
         let y: Double
         let blink: Bool
         let face: Bool
+        let f: [Double]?
+        let seq: Int?
     }
 
     func start() {
@@ -68,11 +70,16 @@ final class MacGazeSource: GazeSource {
             }
             guard let data, let m = try? decoder.decode(Message.self, from: data), m.type == "gaze" else { continue }
             isConnected = true
-            sample = GazeSample(
-                point: m.face ? CGPoint(x: (m.x + 1) / 2, y: (m.y + 1) / 2) : nil,
-                blink: m.blink,
-                faceDetected: m.face
-            )
+            if !m.face {
+                sample = GazeSample(point: nil, blink: false, faceDetected: false)
+            } else if let f = m.f {
+                sample = GazeSample(point: CGPoint(x: (m.x + 1) / 2, y: (m.y + 1) / 2),
+                                    features: f, blink: m.blink, faceDetected: true)
+            } else {
+                // Eyes closed: the server drops the frame's features. Hold the last point, flag the blink.
+                sample.blink = true
+                sample.faceDetected = true
+            }
         }
     }
 }

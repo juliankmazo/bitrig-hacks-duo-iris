@@ -1,9 +1,15 @@
-"""Mac webcam -> raw gaze feature -> WebSocket (ws://127.0.0.1:8777) for the IrisGaze simulator build.
+"""Mac webcam -> gaze feature vector -> WebSocket (ws://127.0.0.1:8777) for the IrisGaze simulator build.
 
 Run from gaze/mac:  uv run --python 3.12 gaze_server.py [--show] [--camera 0] [--port 8777]
 
-Message (~30 Hz):  {"type":"gaze","x":f,"y":f,"blink":b,"face":b}
-x, y are a raw feature in roughly -1..1 (not screen aligned); the app calibrates 12 centroids.
+Message (one per camera frame, ~30 Hz):
+  {"type":"gaze","f":[eye_x, eye_y, yaw, pitch, roll] | null, "x":f, "y":f,
+   "face":b, "blink":b, "ear":f, "seq":n}
+- eye_x: iris centre along the eye-corner axis, 0 = image-left corner, 1 = image-right corner (avg both eyes)
+- eye_y: iris centre between the lids, 0 = upper lid, 1 = lower lid (avg both eyes)
+- yaw/pitch/roll: head rotation (rad) from the facial transformation matrix
+- f is null while the face is lost or the eyes are closed (no stale points during blinks).
+x/y are kept for older app builds (roughly -1..1). The app fits a regression at calibration.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ import math
 import threading
 import time
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -29,41 +36,53 @@ MODEL = HERE / "face_landmarker.task"
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
              "face_landmarker/float16/1/face_landmarker.task")
 
-EMA = 0.5
-EYE_W_X, EYE_W_Y = 0.6, 0.3          # webcam vertical eye signal is weak -> lean on head pitch for y
-YAW_RANGE, PITCH_RANGE = 0.35, 0.25  # rad mapped to +-1
-EYE_GAIN = 1.6
-NOSE_TIP, L_OUTER, R_OUTER = 1, 33, 263
+# MediaPipe face mesh indices (478 points incl. iris). Image-left eye = subject's right eye.
+A_OUTER, A_INNER, A_UPPER, A_LOWER = 33, 133, 159, 145      # image-left eye
+B_INNER, B_OUTER, B_UPPER, B_LOWER = 362, 263, 386, 374     # image-right eye
+A_IRIS = (468, 469, 470, 471, 472)
+B_IRIS = (473, 474, 475, 476, 477)
+
+EAR_BLINK = 0.14          # eyelid gap / eye width below this = closed (checked in the startup stats)
+MEDIAN_N = 5
+FEATURE_NAMES = ("eye_x", "eye_y", "yaw", "pitch", "roll")
+
+
+def _ratio(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    """Position of p projected on a->b: 0 at a, 1 at b (robust to head roll)."""
+    ab = b - a
+    d = float(ab @ ab)
+    return 0.5 if d < 1e-9 else float(((p - a) @ ab) / d)
+
+
+def eye_features(pts: np.ndarray) -> tuple[float, float, float]:
+    """pts: (478, 2) in pixels. Returns eye_x, eye_y, ear (both eyes averaged)."""
+    ia = pts[list(A_IRIS)].mean(axis=0)
+    ib = pts[list(B_IRIS)].mean(axis=0)
+    # Horizontal: both measured image-left -> image-right, so they move together.
+    hx_a = _ratio(ia, pts[A_OUTER], pts[A_INNER])
+    hx_b = _ratio(ib, pts[B_INNER], pts[B_OUTER])
+    vy_a = _ratio(ia, pts[A_UPPER], pts[A_LOWER])
+    vy_b = _ratio(ib, pts[B_UPPER], pts[B_LOWER])
+    ear_a = np.linalg.norm(pts[A_UPPER] - pts[A_LOWER]) / (np.linalg.norm(pts[A_OUTER] - pts[A_INNER]) + 1e-6)
+    ear_b = np.linalg.norm(pts[B_UPPER] - pts[B_LOWER]) / (np.linalg.norm(pts[B_OUTER] - pts[B_INNER]) + 1e-6)
+    return (hx_a + hx_b) / 2, (vy_a + vy_b) / 2, float(ear_a + ear_b) / 2
+
+
+def head_angles(matrix: np.ndarray) -> tuple[float, float, float]:
+    R = matrix[:3, :3]
+    sy = math.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+    yaw = math.atan2(-R[2, 0], sy)
+    pitch = math.atan2(R[2, 1], R[2, 2])
+    roll = math.atan2(R[1, 0], R[0, 0])
+    return yaw, pitch, roll
 
 
 class Shared:
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.msg = {"type": "gaze", "x": 0.0, "y": 0.0, "blink": False, "face": False}
-
-
-def head_angles(matrix: np.ndarray) -> tuple[float, float]:
-    R = matrix[:3, :3]
-    sy = math.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
-    yaw = math.atan2(-R[2, 0], sy)
-    pitch = math.atan2(R[2, 1], R[2, 2])
-    return yaw, pitch
-
-
-def feature(blend: dict[str, float], matrix: np.ndarray | None) -> tuple[float, float]:
-    # Signed eye direction, + = toward the subject's right / down (screen right / down when facing it).
-    eye_x = ((blend.get("eyeLookInLeft", 0) - blend.get("eyeLookOutLeft", 0))
-             + (blend.get("eyeLookOutRight", 0) - blend.get("eyeLookInRight", 0))) / 2
-    eye_y = ((blend.get("eyeLookDownLeft", 0) - blend.get("eyeLookUpLeft", 0))
-             + (blend.get("eyeLookDownRight", 0) - blend.get("eyeLookUpRight", 0))) / 2
-    yaw = pitch = 0.0
-    if matrix is not None:
-        yaw, pitch = head_angles(matrix)
-    hx = -yaw / YAW_RANGE
-    hy = -pitch / PITCH_RANGE
-    x = EYE_W_X * eye_x * EYE_GAIN + (1 - EYE_W_X) * hx
-    y = EYE_W_Y * eye_y * EYE_GAIN + (1 - EYE_W_Y) * hy
-    return float(np.clip(x, -1.5, 1.5)), float(np.clip(y, -1.5, 1.5))
+        self.seq = 0
+        self.msg: dict = {"type": "gaze", "f": None, "x": 0.0, "y": 0.0, "face": False,
+                          "blink": False, "ear": 0.0, "seq": 0}
 
 
 def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event) -> None:
@@ -87,69 +106,107 @@ def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event)
         stop.set()
         return
 
-    sx = sy = None
-    frames, faces, t_report = 0, 0, time.monotonic()
+    hist: deque[np.ndarray] = deque(maxlen=MEDIAN_N)
+    frames = faces = blinks = 0
+    t_report = time.monotonic()
     t0 = time.monotonic()
     last_ts = -1
+    stats: list[np.ndarray] = []
+    ears: list[float] = []
+    stats_done = False
     while not stop.is_set():
         ok, frame = cap.read()
         if not ok:
-            time.sleep(0.01)
+            time.sleep(0.005)
             continue
-        small = cv2.resize(frame, (960, 540))
-        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        ts = int((time.monotonic() - t0) * 1000)
-        if ts <= last_ts:
-            ts = last_ts + 1
+        h0, w0 = frame.shape[:2]
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # full res: iris landmarks need the pixels
+        ts = max(int((time.monotonic() - t0) * 1000), last_ts + 1)
         last_ts = ts
         res = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
         frames += 1
 
-        face = bool(res.face_landmarks)
+        face = bool(res.face_landmarks) and len(res.face_landmarks[0]) >= 478
+        feat = None
         blink = False
+        ear = 0.0
+        pts = None
         if face:
             faces += 1
+            pts = np.array([(lm.x * w0, lm.y * h0) for lm in res.face_landmarks[0]], dtype=np.float64)
+            ex, ey, ear = eye_features(pts)
             blend = {c.category_name: c.score for c in res.face_blendshapes[0]} if res.face_blendshapes else {}
-            matrix = (np.array(res.facial_transformation_matrixes[0])
-                      if res.facial_transformation_matrixes else None)
-            x, y = feature(blend, matrix)
-            blink = blend.get("eyeBlinkLeft", 0) > 0.5 and blend.get("eyeBlinkRight", 0) > 0.5
-            if not blink:  # closed-eye frames are garbage: hold the point
-                sx = x if sx is None else EMA * x + (1 - EMA) * sx
-                sy = y if sy is None else EMA * y + (1 - EMA) * sy
+            blink = ear < EAR_BLINK or (blend.get("eyeBlinkLeft", 0) > 0.5 and blend.get("eyeBlinkRight", 0) > 0.5)
+            yaw = pitch = roll = 0.0
+            if res.facial_transformation_matrixes:
+                yaw, pitch, roll = head_angles(np.array(res.facial_transformation_matrixes[0]))
+            raw = np.array([ex, ey, yaw, pitch, roll])
+            if not stats_done:
+                ears.append(ear)
+            if blink:
+                blinks += 1
+            else:
+                hist.append(raw)
+                feat = np.median(np.array(hist), axis=0)  # 5-frame median: kills single-frame outliers
+                if not stats_done:
+                    stats.append(raw)
         else:
-            sx = sy = None
+            hist.clear()
 
         with shared.lock:
-            shared.msg = {"type": "gaze", "x": round(sx or 0.0, 4), "y": round(sy or 0.0, 4),
-                          "blink": blink, "face": face and sx is not None}
+            shared.seq += 1
+            shared.msg = {
+                "type": "gaze",
+                "f": [round(float(v), 5) for v in feat] if feat is not None else None,
+                # backward compat: roughly -1..1
+                "x": round(float((feat[0] - 0.5) * 4 - feat[2] * 2) if feat is not None else 0.0, 4),
+                "y": round(float((feat[1] - 0.5) * 4 - feat[3] * 3) if feat is not None else 0.0, 4),
+                "face": face, "blink": blink, "ear": round(ear, 4), "seq": shared.seq,
+            }
 
         now = time.monotonic()
+        if not stats_done and now - t0 >= 5.0:
+            stats_done = True
+            if stats:
+                S = np.array(stats)
+                print("feature ranges over first 5 s (n=%d):" % len(S), flush=True)
+                for i, n in enumerate(FEATURE_NAMES):
+                    print(f"  {n:6s} min {S[:, i].min():+.4f}  max {S[:, i].max():+.4f}  "
+                          f"std {S[:, i].std():.4f}", flush=True)
+            if ears:
+                print(f"  ear    min {min(ears):.3f}  max {max(ears):.3f}  median {float(np.median(ears)):.3f}",
+                      flush=True)
+            if not stats:
+                print("feature ranges: no face in the first 5 s", flush=True)
         if now - t_report >= 1.0:
-            print(f"fps {frames / (now - t_report):5.1f}  face {faces}/{frames}  "
-                  f"x {sx if sx is not None else float('nan'):+.3f}  "
-                  f"y {sy if sy is not None else float('nan'):+.3f}  blink {blink}", flush=True)
-            frames, faces, t_report = 0, 0, now
+            fs = " ".join(f"{v:+.3f}" for v in feat) if feat is not None else "-"
+            print(f"fps {frames / (now - t_report):5.1f}  face {faces}/{frames}  blink {blinks}  "
+                  f"ear {ear:.3f}  f [{fs}]", flush=True)
+            frames = faces = blinks = 0
+            t_report = now
 
         if args.show:
-            vis = small.copy()
-            if face:
-                h, w = vis.shape[:2]
-                for lm in res.face_landmarks[0][::4]:
-                    cv2.circle(vis, (int(lm.x * w), int(lm.y * h)), 1, (0, 200, 0), -1)
-                nose = res.face_landmarks[0][NOSE_TIP]
-                c = (int(nose.x * w), int(nose.y * h))
-                if sx is not None:
-                    # mirror x so the arrow matches what you see
-                    cv2.arrowedLine(vis, c, (int(c[0] - sx * 150), int(c[1] + sy * 150)), (0, 220, 255), 3)
-            cv2.imshow("IrisGaze (q quits)", cv2.flip(vis, 1))
+            vis = frame.copy()
+            if pts is not None:
+                for i in (A_OUTER, A_INNER, A_UPPER, A_LOWER, B_OUTER, B_INNER, B_UPPER, B_LOWER):
+                    cv2.circle(vis, tuple(int(v) for v in pts[i]), 3, (0, 200, 0), -1)
+                for iris in (A_IRIS, B_IRIS):
+                    c = pts[list(iris)].mean(axis=0)
+                    cv2.circle(vis, tuple(int(v) for v in c), 4, (0, 220, 255), -1)
+                if feat is not None:
+                    cv2.putText(vis, "ex %.3f ey %.3f yaw %+.2f pitch %+.2f" % tuple(feat[:4]), (30, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 220, 255), 3)
+            cv2.imshow("IrisGaze (q quits)", cv2.resize(vis, (960, 540)))
             if cv2.waitKey(1) & 0xFF == ord("q"):
+                stop.set()
+            if args.show_seconds and now - t0 > args.show_seconds:
+                cv2.imwrite(str(HERE / "show_last.jpg"), vis)
                 stop.set()
     cap.release()
 
 
 async def serve_ws(shared: Shared, args: argparse.Namespace, stop: threading.Event) -> None:
-    clients = set()
+    clients: set = set()
 
     async def handler(ws):
         clients.add(ws)
@@ -163,20 +220,24 @@ async def serve_ws(shared: Shared, args: argparse.Namespace, stop: threading.Eve
 
     async with serve(handler, "127.0.0.1", args.port):
         print(f"serving ws://127.0.0.1:{args.port}", flush=True)
+        last_seq = -1
         while not stop.is_set():
             with shared.lock:
-                payload = json.dumps(shared.msg)
-            for ws in list(clients):
-                try:
-                    await ws.send(payload)
-                except Exception:
-                    clients.discard(ws)
-            await asyncio.sleep(1 / 30)
+                seq, payload = shared.seq, json.dumps(shared.msg)
+            if seq != last_seq:  # only send new camera frames
+                last_seq = seq
+                for ws in list(clients):
+                    try:
+                        await ws.send(payload)
+                    except Exception:
+                        clients.discard(ws)
+            await asyncio.sleep(0.005)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--show", action="store_true", help="OpenCV debug window")
+    ap.add_argument("--show-seconds", type=float, default=0, help="with --show: quit after N s, save show_last.jpg")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--port", type=int, default=8777)
     args = ap.parse_args()

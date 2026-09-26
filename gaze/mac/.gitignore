@@ -1,3 +1,4 @@
 *.task
 .venv/
 __pycache__/
+show_last.jpg

@@ -7,14 +7,32 @@ struct CalibrationView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             GridView(model: model, layout: layout, calibrationTarget: model.calibratingZone)
-                .opacity(model.isCalibrating ? 1 : 0.25)
+                .opacity(model.isCalibrating ? 0.55 : 0.25)
 
-            if !model.isCalibrating, let first = layout.cells.first, let last = layout.cells.last {
-                CalibrationPrompt(model: model)
-                    .frame(width: first.union(last).width, height: first.union(last).height)
-                    .offset(x: first.minX, y: first.minY)
+            if let k = model.calibratingZone, let frame = layout.cells[safe: k] {
+                CalibrationTarget(phase: model.calibrationPhase, progress: model.calibrationProgress, cellSize: frame.size)
+                    .position(x: frame.midX, y: frame.midY)
+                    .id(k)
+            }
+
+            if let first = layout.cells.first, let last = layout.cells.last {
+                let area = first.union(last)
+                if !model.isCalibrating {
+                    CalibrationPrompt(model: model)
+                        .frame(width: area.width, height: area.height)
+                        .offset(x: area.minX, y: area.minY)
+                } else if let message = model.calibrationMessage {
+                    Text(message)
+                        .font(.title3.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(Color.red.opacity(0.75), in: .capsule)
+                        .position(x: area.midX, y: area.maxY - 24)
+                }
             }
         }
+        .animation(.spring(duration: 0.3), value: model.calibratingZone)
     }
 }
 
@@ -25,7 +43,7 @@ struct CalibrationPrompt: View {
         VStack(spacing: 14) {
             Text("Calibrate")
                 .font(.largeTitle.bold())
-            Text("Look at each purple LOOK HERE cell until its ring fills. 12 cells, about 30 seconds. Keep your head still.")
+            Text("Look at the purple target in each cell. Hold still while the ring counts down, keep looking while it fills green. 12 cells, about 35 seconds.")
                 .font(.title3)
                 .foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)

@@ -52,6 +52,10 @@ struct StatusPill: View {
                 indicator("face", on: s.faceDetected, color: .green)
                 indicator("blink", on: s.blink, color: .yellow)
                 Text("cal \(model.calibrator.calibratedCount)/12")
+                if let err = model.calibrator.residualPoints {
+                    Text("cal err \(Int(err.rounded()))px")
+                        .foregroundStyle(err < 30 ? .green : err < 60 ? .yellow : .red)
+                }
                 Text("\(model.fps) fps")
                 Text(model.hingeText)
                     .foregroundStyle(Theme.muted)
@@ -60,7 +64,9 @@ struct StatusPill: View {
             HStack(spacing: 8) {
                 Button("Calibrate", systemImage: "scope") { model.startCalibration() }
                     .tint(Theme.look)
-                Button("Test", systemImage: "play") { model.test() }
+                Toggle("Test", systemImage: "scope",
+                       isOn: Binding(get: { model.showDebug }, set: { _ in model.test() }))
+                    .toggleStyle(.button)
                 Button("Reset cal", systemImage: "arrow.counterclockwise") { model.resetCalibration() }
                 if model.usingSimulated {
                     Toggle("Tour", systemImage: "figure.walk",

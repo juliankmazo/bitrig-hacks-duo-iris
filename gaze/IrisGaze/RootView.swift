@@ -34,8 +34,12 @@ struct RootView: View {
                         .frame(width: layout.panel.width, height: layout.panel.height, alignment: .topLeading)
                         .offset(x: layout.panel.minX, y: layout.panel.minY)
 
-                    if !model.calibrator.isCalibrated && !model.needsCalibration && model.screen == .grid {
-                        GazeCursor(model: model, size: proxy.size)
+                    if model.screen == .grid {
+                        if model.showDebug && model.calibrator.isCalibrated {
+                            DebugOverlay(model: model, layout: layout)
+                        } else if !model.calibrator.isCalibrated && !model.needsCalibration {
+                            GazeCursor(model: model, size: proxy.size)
+                        }
                     }
                 }
             }

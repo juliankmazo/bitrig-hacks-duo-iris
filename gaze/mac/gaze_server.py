@@ -9,6 +9,8 @@ Message (one per camera frame, ~30 Hz):
 - eye_y: iris centre between the lids, 0 = upper lid, 1 = lower lid (avg both eyes)
 - fl / fr: the same iris x/y for the subject's left / right eye separately
 - yaw/pitch/roll: head rotation (rad) from the facial transformation matrix
+- f2: {name: value} pose-invariant features (features.py F2_NAMES); "key": raw key landmarks (normalized
+  x, y, z), head matrix "m", eye blendshapes "bs", frame size "wh" for offline recompute (replay.py --recompute)
 - f is null while the face is lost or the eyes are closed (no stale points during blinks).
 x/y are kept for older app builds (roughly -1..1). The app fits a regression at calibration.
 """
@@ -31,6 +33,8 @@ import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 from websockets.asyncio.server import serve
+
+from features import BLENDSHAPE_KEYS, F2_NAMES, KEY_LANDMARKS, extract_f2
 
 HERE = Path(__file__).resolve().parent
 MODEL = HERE / "face_landmarker.task"
@@ -110,6 +114,7 @@ def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event)
         return
 
     hist: deque[np.ndarray] = deque(maxlen=MEDIAN_N)
+    hist2: deque[np.ndarray] = deque(maxlen=MEDIAN_N)
     frames = faces = blinks = 0
     t_report = time.monotonic()
     t0 = time.monotonic()
@@ -131,19 +136,33 @@ def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event)
 
         face = bool(res.face_landmarks) and len(res.face_landmarks[0]) >= 478
         feat = None
+        f2 = None
+        raw_frame = None
         blink = False
         ear = 0.0
         pts = None
         if face:
             faces += 1
-            pts = np.array([(lm.x * w0, lm.y * h0) for lm in res.face_landmarks[0]], dtype=np.float64)
+            norm = np.array([(lm.x, lm.y, lm.z) for lm in res.face_landmarks[0]], dtype=np.float64)
+            P3 = norm * np.array([w0, h0, w0])
+            pts = P3[:, :2]
             ex, ey, ear, (lx, ly), (rx, ry) = eye_features(pts)
             blend = {c.category_name: c.score for c in res.face_blendshapes[0]} if res.face_blendshapes else {}
             blink = ear < EAR_BLINK or (blend.get("eyeBlinkLeft", 0) > 0.5 and blend.get("eyeBlinkRight", 0) > 0.5)
             yaw = pitch = roll = 0.0
+            matrix = None
             if res.facial_transformation_matrixes:
-                yaw, pitch, roll = head_angles(np.array(res.facial_transformation_matrixes[0]))
+                matrix = np.array(res.facial_transformation_matrixes[0], dtype=np.float64)
+                yaw, pitch, roll = head_angles(matrix)
             raw = np.array([ex, ey, yaw, pitch, roll, lx, ly, rx, ry])
+            # f2: pose-invariant eye features + head pose/position (features.py, ported from PR #2)
+            f2_vec = np.array([extract_f2(P3, blend, matrix, (w0, h0))[n] for n in F2_NAMES])
+            raw_frame = {
+                "key": [round(float(v), 6) for v in norm[list(KEY_LANDMARKS)].ravel()],
+                "m": [round(float(v), 6) for v in matrix.ravel()] if matrix is not None else None,
+                "bs": [round(float(blend.get(k, 0.0)), 5) for k in BLENDSHAPE_KEYS],
+                "wh": [w0, h0],
+            }
             if not stats_done:
                 ears.append(ear)
             if blink:
@@ -151,10 +170,13 @@ def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event)
             else:
                 hist.append(raw)
                 feat = np.median(np.array(hist), axis=0)  # 5-frame median: kills single-frame outliers
+                hist2.append(f2_vec)
+                f2 = np.median(np.array(hist2), axis=0)
                 if not stats_done:
                     stats.append(raw)
         else:
             hist.clear()
+            hist2.clear()
 
         with shared.lock:
             shared.seq += 1
@@ -166,6 +188,8 @@ def camera_loop(shared: Shared, args: argparse.Namespace, stop: threading.Event)
                 # backward compat: roughly -1..1
                 "x": round(float((feat[0] - 0.5) * 4 - feat[2] * 2) if feat is not None else 0.0, 4),
                 "y": round(float((feat[1] - 0.5) * 4 - feat[3] * 3) if feat is not None else 0.0, 4),
+                "f2": {n: round(float(v), 6) for n, v in zip(F2_NAMES, f2)} if f2 is not None else None,
+                "key": raw_frame,
                 "face": face, "blink": blink, "ear": round(ear, 4), "seq": shared.seq,
             }
 

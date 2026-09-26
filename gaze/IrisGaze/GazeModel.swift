@@ -60,7 +60,7 @@ final class GazeModel {
     private(set) var calibratingZone: Int?
     private(set) var calibrationProgress: Double = 0
     private(set) var isCalibrating = false
-    enum CalibrationPhase { case settle, sampling, validating }
+    enum CalibrationPhase { case settle, sampling, moving, validating }
     private(set) var isValidating = false
     private(set) var validationAccuracy: Double?
     private(set) var validationPerCell: [Int: Double] = [:]
@@ -253,24 +253,38 @@ final class GazeModel {
 
     // MARK: Calibration
 
-    /// Snake order: consecutive targets are neighbours.
-    static let calibrationOrder = [0, 1, 2, 3, 7, 6, 5, 4, 8, 9, 10, 11]
+    /// Snake order: consecutive targets are neighbours; each row is contiguous (for the nod check).
+    static let calibrationRows = [[0, 1, 2, 3], [7, 6, 5, 4], [8, 9, 10, 11]]
     /// Validation visits the cells in a different order.
     static let validationOrder = [5, 10, 3, 8, 1, 6, 11, 0, 9, 2, 7, 4]
-    static let settleSeconds: TimeInterval = 1.0
-    static let sampleSeconds: TimeInterval = 1.5
+    static let settleSeconds: TimeInterval = 0.5
+    static let stillSeconds: TimeInterval = 1.2
+    static let moveSeconds: TimeInterval = 1.5
     static let validationSettleSeconds: TimeInterval = 0.8
-    static let maxRetries = 2
+    static let validationSeconds: TimeInterval = 1.5
+    /// Rows must differ in head pitch by at least this much (rad), else "nod more" and redo the row.
+    static let minRowPitchStep = 0.015
+    static let maxRowRetries = 2
 
-    /// `-calPasses 2` runs the 12 cells twice (24 rows in the fit).
+    /// `-calPasses 2` runs the targets twice.
     var calPasses = max(1, min(2, UserDefaults.standard.integer(forKey: "calPasses")))
+    /// 4 extra targets near the grid-area corners (own groups 12...15). `-corners NO` disables.
+    var includeCorners = UserDefaults.standard.object(forKey: "corners") as? Bool ?? true
 
-    /// Max per-feature std during a fixation before the cell is re-asked.
-    private var spreadLimits: [Double] {
-        switch backend {
-        case .mac: [0.025, 0.045, 0.04, 0.04, .infinity, 0.035, 0.06, 0.035, 0.06]
-        default: [0.04, 0.04]
-        }
+    /// Normalized target currently shown (cell centre or corner point).
+    private(set) var calibrationTarget: CGPoint?
+    /// Live instruction under the target.
+    private(set) var calibrationInstruction: String?
+
+    /// Corner targets: 4 % / 6 % inside the grid area's corners (the laptop grid is the top half only).
+    func cornerTargets(layout: GridLayout) -> [CGPoint] {
+        guard let first = layout.cells.first, let last = layout.cells.last, layout.size.width > 0 else { return [] }
+        let area = first.union(last)
+        let (w, h) = (layout.size.width, layout.size.height)
+        let dx = area.width * 0.04, dy = area.height * 0.06
+        return [CGPoint(x: area.minX + dx, y: area.minY + dy), CGPoint(x: area.maxX - dx, y: area.minY + dy),
+                CGPoint(x: area.minX + dx, y: area.maxY - dy), CGPoint(x: area.maxX - dx, y: area.maxY - dy)]
+            .map { CGPoint(x: $0.x / w, y: $0.y / h) }
     }
 
     func startCalibration() {
@@ -288,42 +302,54 @@ final class GazeModel {
             Self.logger.notice("recording \(recorder.url.path(), privacy: .public)")
             if let layout {
                 recorder.write([
-                    "type": "session", "backend": backend.rawValue, "passes": calPasses,
+                    "type": "session", "backend": backend.rawValue, "passes": calPasses, "corners": includeCorners,
+                    "names": FeatureLayout.names(dimension: source.sample.featureVector?.count ?? 2),
                     "size": [layout.size.width, layout.size.height],
                     "cells": layout.cells.map { [$0.minX / layout.size.width, $0.minY / layout.size.height,
                                                  $0.width / layout.size.width, $0.height / layout.size.height] },
+                    "corners_xy": cornerTargets(layout: layout).map { [$0.x, $0.y] },
                 ])
             }
         }
         calibrationTask = Task { [weak self] in
             guard let self else { return }
             for pass in 0..<self.calPasses {
-                for k in Self.calibrationOrder {
-                    var attempt = 0
+                var previousRowPitch: Double?
+                for row in Self.calibrationRows {
+                    var retries = 0
                     while !Task.isCancelled {
-                        self.calibratingZone = k
-                        self.simulated.pinnedTourTarget = self.layout?.normalizedCenters[safe: k]
-                        let result = await self.collect(zone: k, pass: pass)
+                        var rowPitches: [Double] = []
+                        for k in row {
+                            guard let target = self.layout?.normalizedCenters[safe: k] else { continue }
+                            if let p = await self.calibrateTarget(group: k, cell: k, target: target, pass: pass) {
+                                rowPitches.append(p)
+                            }
+                            if Task.isCancelled { return }
+                        }
+                        // Rows come from head pitch: consecutive rows must be told apart by a nod.
+                        let pitch = rowPitches.isEmpty ? nil : rowPitches.sorted()[rowPitches.count / 2]
+                        if let pitch, let prev = previousRowPitch, abs(pitch - prev) < Self.minRowPitchStep,
+                           retries < Self.maxRowRetries, self.backend != .sim {
+                            retries += 1
+                            Self.logger.notice("row \(row, privacy: .public) pitch \(pitch, format: .fixed(precision: 3)) vs \(prev, format: .fixed(precision: 3)): nod more")
+                            self.calibrationMessage = "Nod more — point your nose at this row"
+                            self.calibrator.removeFrames(groups: Set(row), pass: pass)
+                            try? await Task.sleep(for: .milliseconds(1200))
+                            continue
+                        }
+                        if let pitch { previousRowPitch = pitch }
+                        break
+                    }
+                }
+                if self.includeCorners, let layout = self.layout {
+                    for (i, target) in self.cornerTargets(layout: layout).enumerated() {
+                        _ = await self.calibrateTarget(group: Self.cornerGroup + i, cell: nil, target: target, pass: pass)
                         if Task.isCancelled { return }
-                        if let median = result.median, (result.ok || attempt >= Self.maxRetries) {
-                            self.calibrator.addMedian(cell: k, pass: pass, median)
-                            Self.logger.notice("cal pass \(pass) zone \(k) n=\(result.count) ok=\(result.ok) median=\(median.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public) std=\(result.std.map { String(format: "%.4f", $0) }.joined(separator: ","), privacy: .public)")
-                            self.recorder?.write(["type": "median", "cell": k, "pass": pass, "f": median,
-                                                  "std": result.std, "ok": result.ok])
-                            break
-                        }
-                        attempt += 1
-                        if attempt > 5 {   // no usable data at all: skip this cell, fit with the rest
-                            Self.logger.notice("cal zone \(k) skipped")
-                            break
-                        }
-                        self.calibrationMessage = result.reason
-                        Self.logger.notice("cal zone \(k) rejected: \(result.reason, privacy: .public)")
-                        try? await Task.sleep(for: .milliseconds(700))
                     }
                 }
             }
             guard let layout = self.layout else { return self.finishCalibration() }
+            self.calibrationInstruction = "Fitting…"
             self.calibrator.fit(layout: layout)
             self.recorder?.write(["type": "fit", "model": self.calibrator.modelDescription,
                                   "calErr": self.calibrator.residualPoints ?? -1, "cv": self.calibrator.cvPoints ?? -1])
@@ -335,7 +361,60 @@ final class GazeModel {
         }
     }
 
-    /// Validate: the same 12 cells in another order, 0.8 s settle + 1.5 s scored, no fitting.
+    static let cornerGroup = 12
+
+    /// One target: settle, then a "still" phase (nose on the target) and a "move" phase (gentle nods/turns).
+    /// Every usable frame goes into the fit. Returns the median head pitch of the still phase.
+    private func calibrateTarget(group: Int, cell: Int?, target: CGPoint, pass: Int) async -> Double? {
+        var attempt = 0
+        while !Task.isCancelled {
+            calibratingZone = cell
+            calibrationTarget = target
+            simulated.pinnedTourTarget = target
+            calibrationPhase = .settle
+            calibrationInstruction = "Point your nose at the target"
+            await pump(seconds: Self.settleSeconds, phase: "settle", cell: group, pass: pass) { _ in }
+            calibrationMessage = nil
+
+            var still: [[Double]] = [], move: [[Double]] = []
+            var frames = 0, lost = 0
+            calibrationPhase = .sampling
+            calibrationInstruction = "Hold still — nose and eyes on the target"
+            await pump(seconds: Self.stillSeconds, phase: "still", cell: group, pass: pass) { s in
+                frames += 1
+                if !s.faceDetected { lost += 1 } else if !s.blink, let f = s.featureVector { still.append(f) }
+            }
+            calibrationPhase = .moving
+            calibrationInstruction = "Nod and turn slightly — keep looking at the target"
+            await pump(seconds: Self.moveSeconds, phase: "move", cell: group, pass: pass) { s in
+                frames += 1
+                if !s.faceDetected { lost += 1 } else if !s.blink, let f = s.featureVector { move.append(f) }
+            }
+            calibrationPhase = nil
+            if Task.isCancelled { return nil }
+
+            let lostTooMuch = frames == 0 || Double(lost) / Double(frames) > 0.3 || still.count < 8
+            if lostTooMuch, attempt < 5 {
+                attempt += 1
+                calibrationMessage = "Face lost — look at the target again"
+                Self.logger.notice("target \(group) rejected: face lost \(lost)/\(frames)")
+                try? await Task.sleep(for: .milliseconds(600))
+                continue
+            }
+            calibrator.addFrames(still, group: group, target: target, pass: pass, stage: .still)
+            calibrator.addFrames(move, group: group, target: target, pass: pass, stage: .move)
+            let names = FeatureLayout.names(dimension: still.first?.count ?? 0)
+            let pitchIdx = names.firstIndex(of: "pitch")
+            let pitch = pitchIdx.flatMap { i in Self.median(still.map { [$0[i]] })?.first }
+            Self.logger.notice("target \(group) pass \(pass): \(still.count) still + \(move.count) move frames, pitch \(pitch ?? .nan, format: .fixed(precision: 3)), median \((Self.median(still) ?? []).map { String(format: "%.3f", $0) }.joined(separator: ","), privacy: .public)")
+            recorder?.write(["type": "target", "group": group, "cell": cell ?? -1, "target": [target.x, target.y],
+                             "pass": pass, "still": still.count, "move": move.count])
+            return pitch ?? (backend == .sim ? Double(target.y) : nil)
+        }
+        return nil
+    }
+
+    /// Validate: the 12 cells in another order, 0.8 s settle + 1.5 s scored, no fitting.
     private func validate(layout: GridLayout) async {
         isValidating = true
         defer { isValidating = false }
@@ -344,12 +423,14 @@ final class GazeModel {
         for k in Self.validationOrder {
             guard !Task.isCancelled else { return }
             calibratingZone = k
-            simulated.pinnedTourTarget = layout.normalizedCenters[safe: k]
+            calibrationTarget = layout.normalizedCenters[safe: k]
+            simulated.pinnedTourTarget = calibrationTarget
             calibrationPhase = .settle
+            calibrationInstruction = "Validate: point your nose at the target"
             await pump(seconds: Self.validationSettleSeconds, phase: "vsettle", cell: k, pass: -1) { _ in }
             calibrationPhase = .validating
             var cellHits = 0, cellTotal = 0
-            await pump(seconds: Self.sampleSeconds, phase: "validate", cell: k, pass: -1) { s in
+            await pump(seconds: Self.validationSeconds, phase: "validate", cell: k, pass: -1) { s in
                 guard s.faceDetected, !s.blink, let p = self.calibrator.predict(s, layout: layout) else { return }
                 cellTotal += 1
                 if layout.zone(forNormalized: p) == k { cellHits += 1 }
@@ -376,51 +457,16 @@ final class GazeModel {
             let s = source.sample
             if s != last {
                 last = s
-                recorder?.write(["type": "frame", "t": Date.now.timeIntervalSince1970, "phase": phase, "cell": cell,
-                                 "pass": pass, "face": s.faceDetected, "blink": s.blink,
-                                 "f": s.featureVector.map { $0 as Any } ?? NSNull()])
+                var rec: [String: Any] = ["type": "frame", "t": Date.now.timeIntervalSince1970, "phase": phase,
+                                          "cell": cell, "pass": pass, "face": s.faceDetected, "blink": s.blink,
+                                          "f": s.featureVector.map { $0 as Any } ?? NSNull()]
+                if let raw = s.raw { rec["raw"] = raw.json }
+                recorder?.write(rec)
                 handle(s)
             }
             calibrationProgress = Date.now.timeIntervalSince(start) / seconds
             try? await Task.sleep(for: .milliseconds(12))
         }
-    }
-
-    private struct Collection {
-        var median: [Double]?
-        var std: [Double] = []
-        var count = 0
-        var ok = false
-        var reason = ""
-    }
-
-    /// Settle, then sample; median per feature; flag large spread or lost face.
-    private func collect(zone k: Int, pass: Int) async -> Collection {
-        calibrationPhase = .settle
-        await pump(seconds: Self.settleSeconds, phase: "settle", cell: k, pass: pass) { _ in }
-        calibrationMessage = nil
-        calibrationPhase = .sampling
-        var samples: [[Double]] = []
-        var frames = 0, lost = 0
-        await pump(seconds: Self.sampleSeconds, phase: "sample", cell: k, pass: pass) { s in
-            frames += 1
-            if !s.faceDetected { lost += 1 }
-            else if !s.blink, let f = s.featureVector { samples.append(f) }
-        }
-        calibrationPhase = nil
-        guard samples.count >= 8, let median = Self.median(samples), let d = samples.first?.count else {
-            return Collection(count: samples.count, reason: "Face lost — look at the cell again")
-        }
-        let std = (0..<d).map { j -> Double in
-            let v = samples.map { $0[j] }
-            let m = v.reduce(0, +) / Double(v.count)
-            return (v.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(v.count)).squareRoot()
-        }
-        let shaky = zip(std, spreadLimits).contains { $0 > $1 }
-        let lostTooMuch = frames > 0 && Double(lost) / Double(frames) > 0.3
-        var c = Collection(median: median, std: std, count: samples.count, ok: !shaky && !lostTooMuch)
-        c.reason = lostTooMuch ? "Face lost — look at the cell again" : "Too shaky — hold your gaze steady"
-        return c
     }
 
     /// "Test": leave calibration and toggle the debug overlay (live predicted point + projected medians).
@@ -450,6 +496,8 @@ final class GazeModel {
         isCalibrating = false
         isValidating = false
         calibratingZone = nil
+        calibrationTarget = nil
+        calibrationInstruction = nil
         calibrationProgress = 0
         calibrationPhase = nil
         calibrationMessage = nil

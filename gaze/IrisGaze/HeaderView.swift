@@ -45,6 +45,12 @@ struct TypedText: View {
             }
         }
         .foregroundStyle(Theme.text)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(model.startOverFlash ? Color.red.opacity(0.18) : Color.white,
+                    in: .rect(cornerRadius: 24, style: .continuous))
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
+        .animation(.easeOut(duration: 0.15), value: model.startOverFlash)
     }
 }
 

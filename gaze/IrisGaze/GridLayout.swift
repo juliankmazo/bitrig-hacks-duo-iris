@@ -102,24 +102,26 @@ struct GridLayout: Equatable {
             gridRect = CGRect(x: content.minX, y: y, width: content.width, height: max(0, content.maxY - y))
         }
 
+        // Keyboard design: gap ≈ 1/6 of a cell width (4 cells + 3 gaps = 4.5 cell widths).
+        let cellGap = max(gap, (gridRect.width / 4.5 / 6).rounded())
         // Columns: split 2 + 2 around a vertical fold, else even.
         var xs: [(CGFloat, CGFloat)]
         if arrangement == .book, let f = fold, f.midX > gridRect.minX, f.midX < gridRect.maxX {
-            let leftEnd = f.minX - max(foldMargins.leading, gap / 2)
-            let rightStart = f.maxX + max(foldMargins.trailing, gap / 2)
-            let lw = max(0, (leftEnd - gridRect.minX - gap) / 2)
-            let rw = max(0, (gridRect.maxX - rightStart - gap) / 2)
-            xs = [(gridRect.minX, lw), (gridRect.minX + lw + gap, lw),
-                  (rightStart, rw), (rightStart + rw + gap, rw)]
+            let leftEnd = f.minX - max(foldMargins.leading, cellGap / 2)
+            let rightStart = f.maxX + max(foldMargins.trailing, cellGap / 2)
+            let lw = max(0, (leftEnd - gridRect.minX - cellGap) / 2)
+            let rw = max(0, (gridRect.maxX - rightStart - cellGap) / 2)
+            xs = [(gridRect.minX, lw), (gridRect.minX + lw + cellGap, lw),
+                  (rightStart, rw), (rightStart + rw + cellGap, rw)]
         } else {
-            let cw = max(0, (gridRect.width - gap * CGFloat(columns - 1)) / CGFloat(columns))
-            xs = (0..<columns).map { (gridRect.minX + CGFloat($0) * (cw + gap), cw) }
+            let cw = max(0, (gridRect.width - cellGap * CGFloat(columns - 1)) / CGFloat(columns))
+            xs = (0..<columns).map { (gridRect.minX + CGFloat($0) * (cw + cellGap), cw) }
         }
-        let rowH = max(0, (gridRect.height - gap * CGFloat(rows - 1)) / CGFloat(rows))
+        let rowH = max(0, (gridRect.height - cellGap * CGFloat(rows - 1)) / CGFloat(rows))
         var cells: [CGRect] = []
         for r in 0..<rows {
             for c in 0..<columns {
-                cells.append(CGRect(x: xs[c].0, y: gridRect.minY + CGFloat(r) * (rowH + gap),
+                cells.append(CGRect(x: xs[c].0, y: gridRect.minY + CGFloat(r) * (rowH + cellGap),
                                     width: xs[c].1, height: rowH))
             }
         }

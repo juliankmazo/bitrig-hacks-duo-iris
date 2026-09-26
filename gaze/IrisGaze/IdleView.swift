@@ -12,7 +12,7 @@ struct IdleView: View {
                 .font(.title2)
                 .foregroundStyle(.secondary)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(Theme.text)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

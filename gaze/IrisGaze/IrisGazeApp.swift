@@ -7,7 +7,7 @@ struct IrisGazeApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(.light)
                 .task { model.start() }
         }
     }

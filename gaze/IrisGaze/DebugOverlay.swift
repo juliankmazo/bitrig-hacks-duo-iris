@@ -22,7 +22,7 @@ struct DebugOverlay: View {
                     var cross = Path()
                     cross.move(to: CGPoint(x: a.x - 7, y: a.y)); cross.addLine(to: CGPoint(x: a.x + 7, y: a.y))
                     cross.move(to: CGPoint(x: a.x, y: a.y - 7)); cross.addLine(to: CGPoint(x: a.x, y: a.y + 7))
-                    ctx.stroke(cross, with: .color(.white.opacity(0.8)), lineWidth: 1.5)
+                    ctx.stroke(cross, with: .color(Theme.text.opacity(0.7)), lineWidth: 1.5)
                     ctx.fill(Path(ellipseIn: CGRect(x: b.x - 5, y: b.y - 5, width: 10, height: 10)), with: .color(.orange))
                 }
             }
@@ -77,7 +77,7 @@ struct CalibrationTarget: View {
                 .frame(width: d, height: d)
                 .scaleEffect(pulse ? 1.6 : 0.6)
             Circle()
-                .stroke(.white.opacity(0.15), lineWidth: 7)
+                .stroke(.black.opacity(0.08), lineWidth: 7)
                 .frame(width: d * 0.62, height: d * 0.62)
             Circle()
                 .trim(from: 0, to: phase == .settle ? 1 - progress : progress)

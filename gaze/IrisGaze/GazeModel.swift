@@ -231,6 +231,8 @@ final class GazeModel {
     private(set) var text = ""
     /// Level 2: the letter-group cell that was zoomed into; nil = level 1.
     private(set) var level2Group: Int?
+    /// "Start over" confirmation flash.
+    private(set) var startOverFlash = false
     /// Cell the zoom animates from.
     private(set) var zoomOrigin: Int = 5
 
@@ -257,15 +259,24 @@ final class GazeModel {
             case .letters:
                 zoomOrigin = z
                 withAnimation(.easeOut(duration: 0.25)) { level2Group = z }
-            case .action:
-                if cell.caption == "SPACE" { text += " " } else if !text.isEmpty { text.removeLast() }
+            case .space:
+                text += " "
+            case .delete:
+                if !text.isEmpty { text.removeLast() }
+            case .startOver:
+                // Clear with a short confirmation flash of the text area (no dialog).
+                startOverFlash = true
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(300))
+                    self?.startOverFlash = false
+                }
+                text = ""
             case .suggest:
                 let i = [3: 0, 7: 1, 11: 2][z] ?? 0
-                if let word = suggestions[safe: i] {
-                    label = word
-                    text = String(text.dropLast(Keyboard.currentWord(in: text).count)) + word + " "
-                }
-            case .rest:
+                guard let word = suggestions[safe: i] else { return }
+                label = word
+                text = String(text.dropLast(Keyboard.currentWord(in: text).count)) + word + " "
+            case .back:
                 return
             }
         } else {

@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import os
+import AVFoundation
 
 enum Screen: String {
     case idle, calibration, grid
@@ -231,6 +232,20 @@ final class GazeModel {
     private(set) var text = ""
     /// Level 2: the letter-group cell that was zoomed into; nil = level 1.
     private(set) var level2Group: Int?
+    @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
+
+    /// Speak the typed text (en-US, rate 0.5).
+    func speak() {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return }
+        synthesizer.stopSpeaking(at: .immediate)
+        let u = AVSpeechUtterance(string: t)
+        u.voice = AVSpeechSynthesisVoice(language: "en-US")
+        u.rate = 0.5
+        synthesizer.speak(u)
+        Self.logger.notice("speak \(t, privacy: .public)")
+    }
+
     /// "Start over" confirmation flash.
     private(set) var startOverFlash = false
     /// Cell the zoom animates from.

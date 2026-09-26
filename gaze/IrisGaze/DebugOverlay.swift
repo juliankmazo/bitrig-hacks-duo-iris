@@ -40,6 +40,15 @@ struct DebugOverlay: View {
                 }
             }
 
+            if let first = layout.cells.first {
+                Text(model.log.isEmpty ? "log: –" : "log: " + model.log.suffix(12).joined(separator: " · "))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .frame(width: layout.size.width - 40)
+                    .position(x: layout.size.width / 2, y: first.minY - 10)
+            }
             if let name = model.recordingName, let last = layout.cells.last {
                 Text("rec: Documents/\(name) · model \(model.calibrator.modelDescription) · implicit \(model.calibrator.implicitRows.count)")
                     .font(.caption2.monospaced())

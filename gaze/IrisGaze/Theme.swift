@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Light theme (Julian's keyboard design).
 enum Theme {
-    static let background = Color(red: 0.96, green: 0.96, blue: 0.97)
+    static let background = Color.white
+    static let speaker = Color(red: 0.18, green: 0.48, blue: 0.96)       // #2F7BF6
     static let cell = Color(red: 0.97, green: 0.97, blue: 0.97)          // #F7F7F7
     static let cellBorder = Color.black.opacity(0.06)
     static let action = Color(red: 0.17, green: 0.17, blue: 0.17)        // #2B2B2B

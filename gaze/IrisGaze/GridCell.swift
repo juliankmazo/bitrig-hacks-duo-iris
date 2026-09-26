@@ -34,8 +34,8 @@ struct GridCell: Identifiable {
         GridCell(id: 5, label: "RSTUV", sub: "8 9", kind: .letters),
         GridCell(id: 6, label: "WXYZ", sub: "? !", kind: .letters),
         GridCell(id: 7, label: "Word 2", kind: .suggest),
-        GridCell(id: 8, label: "Delete", kind: .delete),
-        GridCell(id: 9, label: "Space", sub: "New Word", kind: .space),
+        GridCell(id: 8, label: "Space", sub: "New Word", kind: .space),
+        GridCell(id: 9, label: "Delete", kind: .delete),
         GridCell(id: 10, label: "Start over", kind: .startOver),
         GridCell(id: 11, label: "Word 3", kind: .suggest),
     ]

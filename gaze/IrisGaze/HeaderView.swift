@@ -20,36 +20,42 @@ struct TypedText: View {
     let model: GazeModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-                let on = Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
-                (Text(model.text.isEmpty ? "" : model.text)
-                    + Text("|").foregroundStyle(on ? Theme.glow : .clear))
-                    .font(.system(size: 44, weight: .semibold, design: .rounded))
-                    .lineLimit(2)
-                    .truncationMode(.head)
-                    .minimumScaleFactor(0.6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                    let on = Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+                    (Text(model.text)
+                        + Text("|").foregroundStyle(on ? Theme.glow : .clear))
+                        .font(.system(size: 44, weight: .regular))
+                        .lineLimit(2)
+                        .truncationMode(.head)
+                        .minimumScaleFactor(0.6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if let g = model.level2Group, let cell = GazeModel.cells[safe: g] {
                     Text("● \(cell.label)")
                         .font(.headline)
                         .foregroundStyle(Theme.look)
                 }
-                Text(model.log.isEmpty ? "log: –" : "log: " + model.log.suffix(10).joined(separator: " · "))
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(Theme.muted)
-                    .lineLimit(1)
-                    .truncationMode(.head)
             }
+            Button {
+                model.speak()
+            } label: {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 64, height: 64)
+                    .background(Theme.speaker, in: .circle)
+                    .shadow(color: Theme.speaker.opacity(0.35), radius: 8, y: 3)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Speak text")
         }
         .foregroundStyle(Theme.text)
-        .padding(14)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(model.startOverFlash ? Color.red.opacity(0.18) : Color.white,
-                    in: .rect(cornerRadius: 24, style: .continuous))
-        .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
+        .background(model.startOverFlash ? Color.red.opacity(0.15) : Color.clear,
+                    in: .rect(cornerRadius: 16, style: .continuous))
         .animation(.easeOut(duration: 0.15), value: model.startOverFlash)
     }
 }

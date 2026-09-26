@@ -1,21 +1,19 @@
 """Gaze estimation from MediaPipe FaceLandmarker results.
 
 Pipeline per frame:
-  landmarks + blendshapes + head matrix -> feature vector (extract_features)
-  feature vector -> screen point (x, y in 0..1) via ridge regression fitted at calibration
-  screen point -> One Euro filter -> zone 0..8 with hysteresis
+  landmarks + blendshapes + head matrix -> feature vector (extract_all = v1 2D features + v2 pose-invariant)
+  feature vector -> screen point (x, y in 0..1) via a ridge model fitted at calibration (calib.py)
+  screen point -> median-3 -> One Euro filter -> zone with hysteresis
 
 Everything here is pure numpy; no MediaPipe import so it can be unit-tested headless.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -91,6 +89,84 @@ def extract_features(pts: np.ndarray, blend: dict[str, float], matrix: np.ndarra
     f[15] = pts[NOSE_TIP, 0] / size[0]
     f[16] = pts[NOSE_TIP, 1] / size[1]
     return f
+
+
+# ---------------------------------------------------------------------------
+# v2: pose-invariant eye features (canonical face frame)
+# ---------------------------------------------------------------------------
+# Landmarks logged raw so tune.py can recompute any feature offline.
+FACE_L, FACE_R, FOREHEAD, CHIN = 234, 454, 10, 152
+KEY_LANDMARKS = (NOSE_TIP, FOREHEAD, CHIN, FACE_L, FACE_R, L_OUTER, L_INNER, L_UPPER, L_LOWER,
+                 R_INNER, R_OUTER, R_UPPER, R_LOWER, *L_IRIS, *R_IRIS)
+
+V2_NAMES = (
+    "c_eh_l", "c_eh_r",        # iris horizontal offset from the eye-corner midpoint, canonical frame / eye width
+    "c_ev_l", "c_ev_r",        # iris vertical offset from the eye-corner midpoint, canonical frame / eye width
+    "c_lid_l", "c_lid_r",      # iris vertical offset from the eyelid midpoint, canonical frame / eye width
+    "c_ap_l", "c_ap_r",        # eyelid aperture, canonical frame / eye width
+    "eye_h", "eye_v", "lid_v", # both-eye means of the above (less noise)
+    "bs_h", "bs_v",            # signed eyeLook* blendshape combos (MediaPipe computes them in the face frame)
+    "face_w",                  # face width / frame width (distance proxy)
+)
+ALL_NAMES = FEATURE_NAMES + V2_NAMES
+N_ALL = len(ALL_NAMES)
+IDX = {n: i for i, n in enumerate(ALL_NAMES)}
+
+# pixel space (x right, y down, z away from camera) -> MediaPipe camera space (x right, y up, z toward viewer)
+_PIX_TO_CAM = np.array([1.0, -1.0, -1.0])
+
+
+def head_rotation(matrix: np.ndarray | None) -> np.ndarray:
+    """Pure rotation part of the facial transformation matrix (canonical face -> camera)."""
+    if matrix is None:
+        return np.eye(3)
+    u, _, vt = np.linalg.svd(np.asarray(matrix, dtype=np.float64)[:3, :3])
+    R = u @ vt
+    if np.linalg.det(R) < 0:
+        return np.eye(3)
+    return R
+
+
+def _eye_canonical(P3: np.ndarray, R: np.ndarray, iris, a: int, b: int, up: int, lo: int):
+    """Iris position relative to the eye, rotated into the canonical face frame (x right, y up in the image
+    of a frontal face). a->b are the eye corners left->right in the image. Returns (h, v, lid, aperture)."""
+    def can(v: np.ndarray) -> np.ndarray:        # delta in pixel space -> canonical face frame
+        return (v * _PIX_TO_CAM) @ R              # == R^T @ v_cam
+    c = P3[list(iris)].mean(axis=0)
+    mid = (P3[a] + P3[b]) / 2
+    width = float(np.linalg.norm(can(P3[b] - P3[a]))) + 1e-6
+    d = can(c - mid)
+    lid = can(c - (P3[up] + P3[lo]) / 2)
+    return d[0] / width, d[1] / width, lid[1] / width, float(np.linalg.norm(can(P3[up] - P3[lo]))) / width
+
+
+def extract_v2(P3: np.ndarray, blend: dict[str, float], matrix: np.ndarray | None,
+               size: tuple[int, int]) -> np.ndarray:
+    """P3: (478, 3) landmarks in pixels (x*w, y*h, z*w). Head yaw/pitch/roll and position stay in v1."""
+    R = head_rotation(matrix)
+    lh, lv, llid, lap = _eye_canonical(P3, R, L_IRIS, L_OUTER, L_INNER, L_UPPER, L_LOWER)
+    rh, rv, rlid, rap = _eye_canonical(P3, R, R_IRIS, R_INNER, R_OUTER, R_UPPER, R_LOWER)
+    g = blend.get
+    bs_h = (g("eyeLookOutLeft", 0.0) + g("eyeLookInRight", 0.0) - g("eyeLookInLeft", 0.0) - g("eyeLookOutRight", 0.0)) / 2
+    bs_v = (g("eyeLookUpLeft", 0.0) + g("eyeLookUpRight", 0.0) - g("eyeLookDownLeft", 0.0) - g("eyeLookDownRight", 0.0)) / 2
+    face_w = float(np.linalg.norm(P3[FACE_R, :2] - P3[FACE_L, :2])) / size[0]
+    return np.array([lh, rh, lv, rv, llid, rlid, lap, rap,
+                     (lh + rh) / 2, (lv + rv) / 2, (llid + rlid) / 2, bs_h, bs_v, face_w], dtype=np.float64)
+
+
+def extract_all(P3: np.ndarray, blend: dict[str, float], matrix: np.ndarray | None,
+                size: tuple[int, int]) -> np.ndarray:
+    """Full feature vector (ALL_NAMES): legacy 2D features followed by the v2 canonical-frame features."""
+    return np.concatenate([extract_features(P3[:, :2], blend, matrix, size), extract_v2(P3, blend, matrix, size)])
+
+
+def landmarks_from_key(key_norm, size: tuple[int, int]) -> np.ndarray:
+    """Rebuild a (478, 3) pixel array from logged KEY_LANDMARKS (normalized x, y, z)."""
+    w, h = size
+    P3 = np.zeros((478, 3), dtype=np.float64)
+    k = np.asarray(key_norm, dtype=np.float64)
+    P3[list(KEY_LANDMARKS)] = k * np.array([w, h, w])
+    return P3
 
 
 # ---------------------------------------------------------------------------
@@ -211,127 +287,6 @@ def zone_target(zone: int, cols: int, rows: int) -> tuple[float, float]:
     return ((zone % cols) + 0.5) / cols, ((zone // cols) + 0.5) / rows
 
 
-@dataclass
-class CalibrationModel:
-    mode: str = "hybrid"                       # hybrid | head
-    ridge: float = 3.0
-    cols: int = 4
-    rows: int = 3
-    samples: list[tuple[list[float], float, float]] = field(default_factory=list)
-    # fitted state
-    mu: np.ndarray | None = None
-    sd: np.ndarray | None = None
-    W: np.ndarray | None = None                # (n_design, 2)
-    centroids: dict[int, np.ndarray] = field(default_factory=dict)  # zone -> standardized feature mean
-    quadratic: bool = True
-
-    # ---- feature masking / design matrix ---------------------------------
-    def _mask(self) -> np.ndarray:
-        m = np.zeros(N_FEATURES, dtype=bool)
-        if self.mode == "head":
-            m[list(HEAD_ONLY_IDX)] = True
-        else:
-            m[:] = True
-        return m
-
-    def _standardize(self, F: np.ndarray) -> np.ndarray:
-        return ((F - self.mu) / self.sd)[:, self._mask()]
-
-    def _design(self, Z: np.ndarray) -> np.ndarray:
-        cols = [np.ones((Z.shape[0], 1)), Z]
-        if self.quadratic:
-            core = [i for i, j in enumerate(np.flatnonzero(self._mask())) if j in CORE_IDX]
-            if core:
-                C = Z[:, core]
-                cols.append(C * C)
-                # pairwise products of the core terms (small: 6 -> 15)
-                prods = [C[:, a:a + 1] * C[:, b:b + 1] for a in range(len(core)) for b in range(a + 1, len(core))]
-                if prods:
-                    cols.append(np.hstack(prods))
-        return np.hstack(cols)
-
-    # ---- data --------------------------------------------------------------
-    def add(self, feats: np.ndarray, x: float, y: float) -> None:
-        self.samples.append(([float(v) for v in feats], float(x), float(y)))
-
-    def clear(self) -> None:
-        self.samples.clear()
-        self.mu = self.sd = self.W = None
-        self.centroids.clear()
-
-    @property
-    def n_points(self) -> int:
-        return len({(round(x, 3), round(y, 3)) for _, x, y in self.samples})
-
-    @property
-    def ready(self) -> bool:
-        return self.W is not None
-
-    # ---- fit ---------------------------------------------------------------
-    def fit(self) -> bool:
-        if len(self.samples) < 6:
-            self.W = None
-            return False
-        F = np.array([s[0] for s in self.samples], dtype=np.float64)
-        T = np.array([[s[1], s[2]] for s in self.samples], dtype=np.float64)
-        self.mu = F.mean(axis=0)
-        self.sd = F.std(axis=0) + 1e-6
-        # Quadratic terms only make sense once there are enough distinct targets.
-        self.quadratic = self.n_points >= 7
-        Z = self._standardize(F)
-        X = self._design(Z)
-        lam = self.ridge * np.eye(X.shape[1])
-        lam[0, 0] = 0.0  # don't shrink the bias
-        self.W = np.linalg.solve(X.T @ X + lam, X.T @ T)
-
-        # nearest-centroid fallback, keyed by the zone of the target
-        self.centroids.clear()
-        buckets: dict[int, list[np.ndarray]] = {}
-        for z_row, (_, x, y) in zip(Z, self.samples):
-            buckets.setdefault(raw_zone(x, y, self.cols, self.rows), []).append(z_row)
-        for k, rows in buckets.items():
-            self.centroids[k] = np.mean(rows, axis=0)
-        return True
-
-    # ---- predict -----------------------------------------------------------
-    def predict(self, feats: np.ndarray) -> tuple[float, float] | None:
-        if self.W is None:
-            return None
-        Z = self._standardize(feats[None, :])
-        p = self._design(Z) @ self.W
-        return float(p[0, 0]), float(p[0, 1])
-
-    def nearest_zone(self, feats: np.ndarray) -> int:
-        if not self.centroids or self.mu is None:
-            return -1
-        z = self._standardize(feats[None, :])[0]
-        best, best_d = -1, float("inf")
-        for k, c in self.centroids.items():
-            d = float(np.sum((z - c) ** 2))
-            if d < best_d:
-                best, best_d = k, d
-        return best
-
-    # ---- persistence -------------------------------------------------------
-    def save(self, path: Path) -> None:
-        path.write_text(json.dumps({
-            "version": 1, "mode": self.mode, "ridge": self.ridge,
-            "features": FEATURE_NAMES, "samples": self.samples,
-        }))
-
-    @classmethod
-    def load(cls, path: Path, mode: str, ridge: float, cols: int = 4, rows: int = 3) -> "CalibrationModel":
-        m = cls(mode=mode, ridge=ridge, cols=cols, rows=rows)
-        try:
-            data = json.loads(path.read_text())
-            if tuple(data.get("features", ())) == FEATURE_NAMES:
-                m.samples = [(s[0], s[1], s[2]) for s in data.get("samples", [])]
-                m.fit()
-        except (OSError, ValueError, KeyError):
-            pass
-        return m
-
-
 # ---------------------------------------------------------------------------
 # Full estimator: raw features -> smoothed point, zone, blink, confidence
 # ---------------------------------------------------------------------------
@@ -350,7 +305,7 @@ class GazeState:
 
 
 class GazeEstimator:
-    def __init__(self, model: CalibrationModel, min_cutoff: float = 1.0, beta: float = 8.0,
+    def __init__(self, model, min_cutoff: float = 1.0, beta: float = 8.0,
                  hyst_frames: int = 3, hyst_margin: float = 0.1):
         self.model = model
         self.filter = OneEuroFilter(min_cutoff=min_cutoff, beta=beta)

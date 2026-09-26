@@ -24,25 +24,71 @@ struct GridView: View {
                     .frame(width: col.width + 12, height: col.height + 12)
                     .offset(x: col.minX - 6, y: col.minY - 6)
             }
-            ForEach(GazeModel.cells) { cell in
-                if let frame = layout.cells[safe: cell.id] {
-                    let isTarget = calibrationTarget == cell.id
-                    let isGazed = calibrationTarget == nil && model.zone == cell.id && !model.needsCalibration
-                    CellView(
-                        cell: cell,
-                        isGazed: isGazed,
-                        isTarget: isTarget,
-                        progress: isTarget ? model.calibrationProgress : (isGazed ? model.dwellProgress : 0),
-                        isFlashing: model.flashZone == cell.id,
-                        isCalibrated: model.calibrator.calibratedCells.contains(cell.id)
-                    )
-                    .frame(width: frame.width, height: frame.height)
-                    .offset(x: frame.minX, y: frame.minY)
-                    .onTapGesture(count: model.usingSimulated ? 2 : 1) { model.select(cell.id) }
+            Group {
+                if isKeyboard, let g = model.level2Group {
+                    level2(group: g)
+                } else {
+                    level1
                 }
             }
+            .id(isKeyboard ? (model.level2Group ?? -1) : -1)
+            .transition(.scale(scale: 0.2, anchor: zoomAnchor).combined(with: .opacity))
         }
         .animation(.spring(duration: 0.3), value: calibrationTarget)
+    }
+
+    /// Typing (not calibration): level 2 and suggestions apply.
+    private var isKeyboard: Bool { isTyping && calibrationTarget == nil }
+    var isTyping = true
+
+    private var zoomAnchor: UnitPoint {
+        guard let f = layout.cells[safe: model.zoomOrigin], layout.size.width > 0 else { return .center }
+        return UnitPoint(x: f.midX / layout.size.width, y: f.midY / layout.size.height)
+    }
+
+    private var level1: some View {
+        let suggestions = model.suggestions
+        return ForEach(GazeModel.cells) { base in
+            if let frame = layout.cells[safe: base.id] {
+                let cell = isKeyboard && base.kind == .suggest
+                    ? GridCell(id: base.id, label: suggestions[safe: [3: 0, 7: 1, 11: 2][base.id] ?? 0] ?? "–",
+                               caption: "SUGGEST", kind: .suggest)
+                    : base
+                let isTarget = calibrationTarget == cell.id
+                let isGazed = calibrationTarget == nil && model.zone == cell.id && !model.needsCalibration
+                CellView(
+                    cell: cell,
+                    isGazed: isGazed,
+                    isTarget: isTarget,
+                    progress: isTarget ? model.calibrationProgress : (isGazed ? model.dwellProgress : 0),
+                    isFlashing: model.flashZone == cell.id,
+                    isCalibrated: !isKeyboard && model.calibrator.calibratedCells.contains(cell.id)
+                )
+                .frame(width: frame.width, height: frame.height)
+                .offset(x: frame.minX, y: frame.minY)
+                .onTapGesture(count: model.usingSimulated ? 2 : 1) { model.select(cell.id) }
+            }
+        }
+    }
+
+    /// Level 2: the group's letters, each over a whole column span; "back" across the bottom row.
+    private func level2(group: Int) -> some View {
+        ForEach(Keyboard.keys(forGroup: group)) { key in
+            let frame = key.cells.compactMap { layout.cells[safe: $0] }.reduce(CGRect.null) { $0.union($1) }
+            let isGazed = model.zone.map { key.cells.contains($0) } ?? false
+            CellView(
+                cell: GridCell(id: key.cells[0], label: key.label, kind: key.isBack ? .action : .letters),
+                isGazed: isGazed && !model.needsCalibration,
+                isTarget: false,
+                progress: isGazed ? model.dwellProgress : 0,
+                isFlashing: model.flashZone.map { key.cells.contains($0) } ?? false,
+                isCalibrated: false,
+                large: !key.isBack
+            )
+            .frame(width: frame.width, height: frame.height)
+            .offset(x: frame.minX, y: frame.minY)
+            .onTapGesture(count: model.usingSimulated ? 2 : 1) { model.select(key.cells[0]) }
+        }
     }
 }
 
@@ -72,6 +118,7 @@ struct CellView: View {
     let progress: Double
     let isFlashing: Bool
     let isCalibrated: Bool
+    var large = false
 
     private var borderColor: Color {
         if isTarget { return Theme.look }
@@ -98,7 +145,7 @@ struct CellView: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 20)
                 .padding(.bottom, 6)
-            Text("\(cell.id)")
+            Text(large || cell.label == Keyboard.backLabel ? "" : "\(cell.id)")
                 .font(.caption2.monospacedDigit().weight(.semibold))
                 .foregroundStyle(Theme.muted)
                 .padding(.horizontal, 10)
@@ -130,7 +177,7 @@ struct CellView: View {
                         .font(.system(size: 34, weight: .semibold))
                 } else {
                     Text(cell.label)
-                        .font(.system(size: cell.kind == .suggest ? 26 : 40, weight: .bold, design: .rounded))
+                        .font(.system(size: large ? 110 : cell.kind == .suggest ? 26 : 40, weight: .bold, design: .rounded))
                         .lineLimit(1)
                         .minimumScaleFactor(0.4)
                 }

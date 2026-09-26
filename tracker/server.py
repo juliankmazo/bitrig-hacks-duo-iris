@@ -9,6 +9,11 @@
     uv run --python 3.12 tracker/server.py --debug         # + OpenCV window with landmarks
     uv run --python 3.12 tracker/server.py --no-camera     # synthetic gaze, relay only
     uv run --python 3.12 tracker/server.py --mode head     # nose-pointer fallback
+    uv run --python 3.12 tracker/server.py --cal-hold      # old still-head calibration (24 frames/point)
+
+Calibration is head-tolerant by default: ~3 s per point while the user gently moves the head, plus a
+4 s "head sweep" on a central dot. Every calibration / zone-test frame is logged to cal_samples.jsonl /
+test_samples.jsonl so tune.py can compare models offline.
 
 WebSocket ws://127.0.0.1:8765  (see README "Shared contract"; gaze messages add x, y, conf)
 HTTP      http://127.0.0.1:8766/  demo UI, /outer.html simulated outer display
@@ -36,13 +41,17 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO))
 
 from gaze import (  # noqa: E402
-    CalibrationModel, GazeEstimator, GazeState, SyntheticGaze, extract_features, zone_target, raw_zone,
-    L_IRIS, R_IRIS, L_OUTER, L_INNER, L_UPPER, L_LOWER, R_OUTER, R_INNER, R_UPPER, R_LOWER, NOSE_TIP,
+    GazeEstimator, GazeState, SyntheticGaze, extract_all, zone_target, raw_zone, ALL_NAMES, KEY_LANDMARKS,
+    BLENDSHAPE_KEYS, L_IRIS, R_IRIS, L_OUTER, L_INNER, L_UPPER, L_LOWER, R_OUTER, R_INNER, R_UPPER, R_LOWER,
+    NOSE_TIP,
 )
+from calib import CalibrationModel, SPECS  # noqa: E402
 
 MODEL_PATH = HERE / "face_landmarker.task"
 CAL_PATH = HERE / "calibration.json"
 TEST_LOG = HERE / "test_results.jsonl"
+CAL_SAMPLES = HERE / "cal_samples.jsonl"
+TEST_SAMPLES = HERE / "test_samples.jsonl"
 STATIC_DIR = HERE / "static"
 WS_HOST, WS_PORT, HTTP_PORT = "127.0.0.1", 8765, 8766
 
@@ -55,13 +64,54 @@ class CalRequest:
     x: float
     y: float
     zone: int
-    n: int = 24
-    settle: float = 0.35
-    timeout: float = 3.0
+    n: int = 90
+    settle: float = 0.4
+    timeout: float = 7.4
+    stage: str = "point"            # point | sweep
+    point: int = 0                  # group id within the calibration session
     started: float = 0.0
     count: int = 0
+    frames: int = 0
     future: asyncio.Future | None = None
     loop: asyncio.AbstractEventLoop | None = None
+
+
+class Recorder:
+    """Appends one JSON line per calibration / zone-test frame (raw landmarks + all features + target)."""
+
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+        self._files: dict[Path, object] = {}
+        self.lock = threading.Lock()
+
+    def write(self, path: Path, rec: dict) -> None:
+        if not self.enabled:
+            return
+        with self.lock:
+            f = self._files.get(path)
+            if f is None:
+                f = self._files[path] = path.open("a")
+            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+
+    def flush(self) -> None:
+        """Flush, and reopen next time if a file was deleted/moved while open (so `rm` starts a fresh log)."""
+        with self.lock:
+            for path, f in list(self._files.items()):
+                f.flush()
+                if not path.exists():
+                    f.close()
+                    del self._files[path]
+
+
+def frame_payload(feats, key_norm, matrix, blend: dict, size) -> dict:
+    """Everything tune.py needs to recompute features offline."""
+    return {
+        "feats": None if feats is None else [round(float(v), 6) for v in feats],
+        "lm": None if key_norm is None else [[round(float(v), 5) for v in p] for p in key_norm],
+        "M": None if matrix is None else [round(float(v), 5) for v in np.asarray(matrix).ravel()],
+        "bs": {k: round(float(blend.get(k, 0.0)), 4) for k in (*BLENDSHAPE_KEYS, "eyeBlinkLeft", "eyeBlinkRight")},
+        "size": list(size),
+    }
 
 
 class Hub:
@@ -79,6 +129,21 @@ class Hub:
         self.mode = "hybrid"
         self.camera = "none"
         self.cols, self.rows = 4, 3
+        # calibration flow settings (sent to the UI in `config`)
+        self.cal_frames, self.cal_settle, self.cal_hold = 90, 0.4, False
+        self.sweep_frames, self.cal_sweep, self.cal_corners = 120, True, False
+        self.model_name = "none"
+        # recording
+        self.recorder = Recorder()
+        self.session = time.strftime("%Y%m%d-%H%M%S")
+        self.next_point = 0
+        self.test: dict | None = None     # {"zone", "t0", "run", "i"} while a zone-test target is shown
+        self.emit = lambda msg: None      # thread-safe broadcast, set by Server.run
+
+    def new_session(self) -> None:
+        self.session = time.strftime("%Y%m%d-%H%M%S")
+        self.next_point = 0
+        self.recorder.flush()
 
     def publish(self, s: GazeState, infer_ms: float, e2e_ms: float, fps: float) -> None:
         with self.lock:
@@ -94,11 +159,14 @@ class Hub:
         with self.lock:
             return {"type": "status", "fps": round(self.fps, 1), "infer_ms": round(self.infer_ms, 1),
                     "latency_ms": round(self.e2e_ms, 1), "cal_points": self.cal_points,
-                    "mode": self.mode, "camera": self.camera}
+                    "mode": self.mode, "camera": self.camera, "model": self.model_name}
 
     def config(self) -> dict:
         return {"type": "config", "cols": self.cols, "rows": self.rows, "mode": self.mode,
-                "camera": self.camera, "cal_points": self.cal_points}
+                "camera": self.camera, "cal_points": self.cal_points,
+                "cal_frames": self.cal_frames, "cal_settle": self.cal_settle, "cal_hold": self.cal_hold,
+                "cal_sweep": self.cal_sweep, "cal_corners": self.cal_corners, "sweep_frames": self.sweep_frames,
+                "model": self.model_name}
 
 
 # ---------------------------------------------------------------------------
@@ -216,16 +284,21 @@ def camera_loop(args, hub: Hub, model: CalibrationModel, est: GazeEstimator) -> 
         t1 = time.monotonic()
 
         pts = matrix = None
-        feats = None
+        feats = key_norm = None
+        blend: dict = {}
         blink_l = blink_r = 0.0
         if res.face_landmarks:
             lm = res.face_landmarks[0]
-            pts = np.array([[p.x * w, p.y * h] for p in lm], dtype=np.float64)
+            norm = np.array([[p.x, p.y, p.z] for p in lm], dtype=np.float64)
+            P3 = norm * np.array([w, h, w])
+            pts = P3[:, :2]
+            key_norm = norm[list(KEY_LANDMARKS)]
             blend = {c.category_name: c.score for c in res.face_blendshapes[0]} if res.face_blendshapes else {}
             blink_l, blink_r = blend.get("eyeBlinkLeft", 0.0), blend.get("eyeBlinkRight", 0.0)
             if res.facial_transformation_matrixes:
                 matrix = np.array(res.facial_transformation_matrixes[0], dtype=np.float64)
-            feats = extract_features(pts, blend, matrix, (w, h))
+            feats = extract_all(P3, blend, matrix, (w, h))
+        payload = None
 
         # calibration capture / reset requests from the websocket side
         if hub.cal_reset:
@@ -233,6 +306,7 @@ def camera_loop(args, hub: Hub, model: CalibrationModel, est: GazeEstimator) -> 
             model.clear()
             est.reset_filters()
             hub.cal_points = 0
+            hub.model_name = "none"
             try:
                 CAL_PATH.unlink()
             except OSError:
@@ -243,22 +317,51 @@ def camera_loop(args, hub: Hub, model: CalibrationModel, est: GazeEstimator) -> 
                 req.started = t0
             elapsed = t0 - req.started
             eyes_open = not (blink_l > 0.5 and blink_r > 0.5)
-            if feats is not None and eyes_open and elapsed >= req.settle:
-                model.add(feats, req.x, req.y)
+            used = feats is not None and eyes_open and elapsed >= req.settle
+            if used:
+                model.add(feats, req.x, req.y, req.point, req.stage)
                 req.count += 1
+            req.frames += 1
+            payload = frame_payload(feats, key_norm, matrix, blend, (w, h))
+            hub.recorder.write(CAL_SAMPLES, {
+                "kind": "cal", "session": hub.session, "t": round(t0, 4), "point": req.point, "stage": req.stage,
+                "tx": req.x, "ty": req.y, "zone": req.zone, "since": round(elapsed, 4), "used": used,
+                "hold": hub.cal_hold, **payload})
+            if req.frames % 3 == 0 or req.count >= req.n:
+                hub.emit({"type": "cal_progress", "zone": req.zone, "stage": req.stage, "count": req.count,
+                          "n": req.n, "settling": elapsed < req.settle})
             if req.count >= req.n or elapsed >= req.timeout:
                 hub.cal_request = None
+                hub.recorder.flush()
+                t_fit = time.monotonic()
                 fitted = model.fit()
                 if fitted:
                     model.save(CAL_PATH)
+                    print(f"[cal] fit in {(time.monotonic() - t_fit) * 1000:.0f} ms", flush=True)
                 est.reset_filters()
                 hub.cal_points = model.n_points
+                hub.model_name = model.name
+                best = model.report.get(model.name, {})
                 if req.loop and req.future:
-                    req.loop.call_soon_threadsafe(req.future.set_result,
-                                                  {"count": req.count, "points": model.n_points, "fitted": fitted})
+                    req.loop.call_soon_threadsafe(req.future.set_result, {
+                        "count": req.count, "points": model.n_points, "fitted": fitted, "model": model.name,
+                        "lopo_err": round(best["err"], 4) if best else None,
+                        "lopo_acc": round(best["acc"], 3) if best else None})
 
         state = est.update(feats, blink_l, blink_r, t0)
         t2 = time.monotonic()
+
+        test = hub.test
+        if test is not None and test["zone"] >= 0:
+            if payload is None:
+                payload = frame_payload(feats, key_norm, matrix, blend, (w, h))
+            hub.recorder.write(TEST_SAMPLES, {
+                "kind": "test", "run": test["run"], "cal_session": hub.session, "i": test["i"],
+                "t": round(t0, 4), "zone": test["zone"], "since": round(t0 - test["t0"], 4),
+                "live": {"x": round(state.x, 4), "y": round(state.y, 4), "zone": state.zone if state.calibrated else -1,
+                         "raw": None if state.raw is None else [round(v, 4) for v in state.raw],
+                         "face": state.face, "closed": state.eyes_closed, "model": model.name},
+                **payload})
 
         frame_times.append(t2)
         infer_hist.append((t1 - t0) * 1000)
@@ -270,7 +373,7 @@ def camera_loop(args, hub: Hub, model: CalibrationModel, est: GazeEstimator) -> 
             last_print = t2
             print(f"[track] fps {fps:5.1f} | infer {np.mean(infer_hist):5.1f} ms | e2e {np.mean(e2e_hist):5.1f} ms"
                   f" | face {state.face!s:5} | zone {state.zone:2d} | conf {state.conf:.2f}"
-                  f" | cal {model.n_points} pts", flush=True)
+                  f" | cal {model.n_points} pts ({model.name})", flush=True)
 
         if args.debug:
             cv2.imshow("iris tracker", draw_debug(frame, pts, matrix, state, hub))
@@ -296,11 +399,18 @@ def synthetic_loop(hub: Hub) -> None:
         if req is not None:
             if req.started == 0.0:
                 req.started = t0
-            if t0 - req.started >= 0.8:
+            elapsed = t0 - req.started
+            if elapsed >= req.settle:
+                req.count += 1
+            req.frames += 1
+            if req.frames % 3 == 0 or req.count >= req.n:
+                hub.emit({"type": "cal_progress", "zone": req.zone, "stage": req.stage, "count": req.count,
+                          "n": req.n, "settling": elapsed < req.settle})
+            if req.count >= req.n:
                 hub.cal_request = None
                 if req.loop and req.future:
-                    req.loop.call_soon_threadsafe(req.future.set_result,
-                                                  {"count": 24, "points": hub.cols * hub.rows, "fitted": True})
+                    req.loop.call_soon_threadsafe(req.future.set_result, {
+                        "count": req.count, "points": hub.cols * hub.rows, "fitted": True, "model": "synthetic"})
         hub.publish(syn.sample(), 0.0, 0.0, 30.0)
         if t0 - last_print >= 5.0:
             last_print = t0
@@ -372,17 +482,27 @@ class Server:
         else:
             x, y = float(msg["x"]), float(msg["y"])
             zone = raw_zone(x, y, cols, rows)
+        hub = self.hub
+        stage = "sweep" if msg.get("stage") == "sweep" else "point"
+        default_n = hub.sweep_frames if stage == "sweep" else hub.cal_frames
+        n = max(1, int(msg.get("frames") or default_n))
+        settle = float(msg.get("settle", hub.cal_settle))
+        timeout = settle + n / 30 * 2.0 + 1.0     # blinks / lost face frames don't count
         async with self.cal_lock:
             fut = self.loop.create_future()
-            self.hub.cal_request = CalRequest(x=x, y=y, zone=zone, n=int(msg.get("frames", 24)),
-                                              future=fut, loop=self.loop)
+            point = hub.next_point
+            hub.next_point += 1
+            hub.cal_request = CalRequest(x=x, y=y, zone=zone, n=n, settle=settle, timeout=timeout, stage=stage,
+                                         point=point, future=fut, loop=self.loop)
             try:
-                result = await asyncio.wait_for(fut, timeout=6.0)
+                result = await asyncio.wait_for(fut, timeout=timeout + 3.0)
             except asyncio.TimeoutError:
-                self.hub.cal_request = None
-                result = {"count": 0, "points": self.hub.cal_points, "fitted": False}
-        await self.broadcast({"type": "cal_done", "zone": zone, "x": x, "y": y,
-                             "count": result["count"], "points": result["points"], "fitted": result["fitted"]})
+                hub.cal_request = None
+                result = {"count": 0, "points": hub.cal_points, "fitted": False}
+        await self.broadcast({"type": "cal_done", "zone": zone, "x": x, "y": y, "stage": stage,
+                             "count": result["count"], "points": result["points"], "fitted": result["fitted"],
+                             "model": result.get("model"), "lopo_err": result.get("lopo_err"),
+                             "lopo_acc": result.get("lopo_acc")})
 
     async def handle_suggest(self, ws, msg: dict) -> None:
         mid = msg.get("id", 0)
@@ -414,6 +534,12 @@ class Server:
                 elif t == "cal_reset":
                     self.hub.cal_reset = True
                     self.hub.cal_points = 0
+                    self.hub.new_session()
+                    self.hub.recorder.write(CAL_SAMPLES, {
+                        "kind": "session", "session": self.hub.session, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "names": ALL_NAMES, "key_landmarks": KEY_LANDMARKS, "cols": self.hub.cols,
+                        "rows": self.hub.rows, "mode": self.hub.mode, "cal_frames": self.hub.cal_frames,
+                        "settle": self.hub.cal_settle, "hold": self.hub.cal_hold, "camera": self.hub.camera})
                     await self.broadcast({"type": "cal_done", "zone": -1, "count": 0, "points": 0, "fitted": False})
                 elif t == "caption":
                     await self.broadcast({"type": "caption", "text": msg.get("text", ""), "final": bool(msg.get("final"))})
@@ -423,16 +549,35 @@ class Server:
                     await self._send(ws, json.dumps(self.hub.status()))
                 elif t == "config":
                     await self._send(ws, json.dumps(self.hub.config()))
+                elif t == "test_zone":
+                    self.on_test_zone(msg)
                 elif t == "test_result":
+                    self.hub.test = None
+                    self.hub.recorder.flush()
                     self.log_test_result(msg)
         finally:
             self.clients.discard(ws)
             print(f"[ws] client disconnected ({len(self.clients)} total)", flush=True)
 
+    def on_test_zone(self, msg: dict) -> None:
+        """UI highlights a zone-test target (zone -1 = test over). Frames get labelled with it."""
+        zone = int(msg.get("zone", -1))
+        if zone < 0:
+            self.hub.test = None
+            self.hub.recorder.flush()
+            return
+        i = int(msg.get("i", 0))
+        if i == 0:
+            self.hub.recorder.flush()
+        prev = self.hub.test
+        run = prev["run"] if prev and i > 0 else time.strftime("%Y%m%d-%H%M%S")
+        self.hub.test = {"zone": zone, "t0": time.monotonic(), "run": run, "i": i}
+
     def log_test_result(self, msg: dict) -> None:
         rec = {k: v for k, v in msg.items() if k != "type"}
         rec.update({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "mode": self.hub.mode, "camera": self.hub.camera,
-                    "cols": self.hub.cols, "rows": self.hub.rows, "fps": round(self.hub.fps, 1)})
+                    "cols": self.hub.cols, "rows": self.hub.rows, "fps": round(self.hub.fps, 1),
+                    "cal_session": self.hub.session, "model": self.hub.model_name, "cal_hold": self.hub.cal_hold})
         with TEST_LOG.open("a") as f:
             f.write(json.dumps(rec, separators=(",", ":")) + "\n")
         print(f"[test] overall {rec.get('overall')} -> {TEST_LOG.name}", flush=True)
@@ -441,6 +586,11 @@ class Server:
         import websockets
         self.loop = asyncio.get_running_loop()
         self.cal_lock = asyncio.Lock()
+        loop = self.loop
+
+        def emit(msg: dict) -> None:
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.broadcast(msg)))
+        self.hub.emit = emit
         async with websockets.serve(self.handler, WS_HOST, WS_PORT, max_queue=4):
             print(f"[ws] ws://{WS_HOST}:{WS_PORT}", flush=True)
             pump = asyncio.create_task(self.gaze_pump())
@@ -484,6 +634,16 @@ def main() -> None:
     ap.add_argument("--hyst-frames", type=int, default=3, help="frames a new zone must persist")
     ap.add_argument("--dead-band", type=float, default=0.1, help="zone dead band as a fraction of a cell")
     ap.add_argument("--fresh", action="store_true", help="ignore saved calibration.json")
+    ap.add_argument("--model", choices=["auto", *SPECS], default="auto",
+                    help="calibration model; auto = best leave-one-point-out candidate")
+    ap.add_argument("--cal-hold", action="store_true",
+                    help="old still-head calibration: 24 frames/point, 0.35 s settle, corner points, no sweep")
+    ap.add_argument("--cal-frames", type=int, default=None, help="frames per calibration point (default 90, 24 with --cal-hold)")
+    ap.add_argument("--cal-settle", type=float, default=None, help="seconds discarded after each dot appears (0.4)")
+    ap.add_argument("--sweep-frames", type=int, default=120, help="frames in the head-sweep stage (~4 s)")
+    ap.add_argument("--no-sweep", action="store_true", help="skip the head-sweep stage")
+    ap.add_argument("--cal-corners", action="store_true", help="add the 4 corner points (default only with --cal-hold)")
+    ap.add_argument("--no-record", action="store_true", help="don't log cal/test frames to *_samples.jsonl")
     ap.add_argument("--ws-port", type=int, default=WS_PORT)
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     args = ap.parse_args()
@@ -492,11 +652,24 @@ def main() -> None:
     hub = Hub()
     hub.mode = args.mode
     hub.cols, hub.rows = args.cols, args.rows
-    model = CalibrationModel(mode=args.mode, ridge=args.ridge, cols=args.cols, rows=args.rows) \
-        if args.fresh or args.no_camera else CalibrationModel.load(CAL_PATH, args.mode, args.ridge, args.cols, args.rows)
+    hub.cal_hold = args.cal_hold
+    hub.cal_frames = args.cal_frames or (24 if args.cal_hold else 90)
+    hub.cal_settle = args.cal_settle if args.cal_settle is not None else (0.35 if args.cal_hold else 0.4)
+    hub.cal_sweep = not (args.no_sweep or args.cal_hold)
+    hub.cal_corners = args.cal_corners or args.cal_hold
+    hub.sweep_frames = args.sweep_frames
+    hub.recorder.enabled = not (args.no_record or args.no_camera)
+    model = CalibrationModel(mode=args.mode, ridge=args.ridge, cols=args.cols, rows=args.rows, model=args.model) \
+        if args.fresh or args.no_camera else CalibrationModel.load(CAL_PATH, args.mode, args.ridge, args.cols, args.rows,
+                                                                    model=args.model)
     hub.cal_points = model.n_points if model.ready else 0
+    hub.model_name = model.name
     if model.ready:
-        print(f"[cal] loaded {CAL_PATH.name}: {model.n_points} points, {len(model.samples)} samples", flush=True)
+        print(f"[cal] loaded {CAL_PATH.name}: {model.n_points} points, {len(model.samples)} samples, "
+              f"model {model.name}", flush=True)
+    print(f"[cal] flow: {'hold (still head)' if hub.cal_hold else 'head-tolerant'}, {hub.cal_frames} frames/point, "
+          f"settle {hub.cal_settle}s, sweep {'on' if hub.cal_sweep else 'off'}, corners {'on' if hub.cal_corners else 'off'}, "
+          f"model {args.model}", flush=True)
     est = GazeEstimator(model, min_cutoff=args.min_cutoff, beta=args.beta,
                         hyst_frames=args.hyst_frames, hyst_margin=args.dead_band)
 

@@ -9,6 +9,13 @@ struct CalibrationView: View {
             GridView(model: model, layout: layout, calibrationTarget: model.calibratingZone, isTyping: false)
                 .opacity(model.isCalibrating ? 0.55 : 0.25)
 
+            if model.isCalibrating, model.calibrationStep > 0 {
+                Text("\(model.calibrationStep) / \(model.calibrationTotal)")
+                    .font(.system(size: 17, weight: .medium).monospacedDigit())
+                    .foregroundStyle(Theme.muted)
+                    .position(x: layout.size.width / 2, y: max(layout.panel.midY, 60))
+            }
+
             if let t = model.calibrationTarget, let cellSize = layout.cells.first?.size {
                 let p = CGPoint(x: t.x * layout.size.width, y: t.y * layout.size.height)
                 CalibrationTarget(phase: model.calibrationPhase, progress: model.calibrationProgress, cellSize: cellSize)

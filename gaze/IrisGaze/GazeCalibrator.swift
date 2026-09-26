@@ -123,6 +123,39 @@ final class GazeCalibrator {
         updateDiagnostics(layout: layout)
     }
 
+    // MARK: Persistence
+
+    func export(layout: GridLayout) -> SavedCalibration? {
+        guard isCalibrated, let r = regression else { return nil }
+        return SavedCalibration(
+            names: names, spec: r.spec.name, lambda: r.lambda, geometry: SavedCalibration.geometry(of: layout),
+            frames: frames.map { .init(f: $0.features, group: $0.group, x: $0.target.x, y: $0.target.y,
+                                       pass: $0.pass, stage: $0.stage.rawValue) })
+    }
+
+    /// Restore a saved calibration if its geometry and feature layout match. Returns success.
+    func restore(_ saved: SavedCalibration, layout: GridLayout) -> Bool {
+        guard saved.geometry == SavedCalibration.geometry(of: layout),
+              let spec = GazeModelSpec.candidates(names: saved.names).first(where: { $0.name == saved.spec }) else { return false }
+        let restored = saved.frames.map {
+            Frame(features: $0.f, group: $0.group, target: CGPoint(x: $0.x, y: $0.y), pass: $0.pass,
+                  stage: GazeRegression.Stage(rawValue: $0.stage) ?? .point)
+        }
+        let rows = restored.map {
+            GazeRegression.Row(features: $0.features, target: $0.target,
+                               weight: $0.stage == .move ? Self.moveWeight : 1, group: $0.group, stage: $0.stage)
+        }
+        guard let model = GazeRegression.fit(rows, names: saved.names, spec: spec, lambda: saved.lambda) else { return false }
+        clear()
+        frames = restored
+        names = saved.names
+        regression = model
+        isCalibrated = true
+        updateDiagnostics(layout: layout)
+        GazeModel.logger.notice("restored calibration \(saved.spec, privacy: .public) λ=\(saved.lambda) from \(saved.frames.count) frames saved \(saved.savedAt, privacy: .public)")
+        return true
+    }
+
     /// Implicit recalibration: a completed dwell selection is a labelled sample. Refit with the same spec.
     func addImplicit(cell: Int, features: [Double], layout: GridLayout) {
         guard isCalibrated, let r = regression, features.count == frames.first?.features.count,

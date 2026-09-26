@@ -24,7 +24,11 @@ enum Backend: String, CaseIterable {
 @MainActor
 final class GazeModel {
     static let cells = GridCell.all
-    static let dwellDuration: TimeInterval = 1.0
+    /// `-dwell 1.5` (seconds) to tune without rebuilding.
+    static let dwellDuration: TimeInterval = {
+        let v = UserDefaults.standard.double(forKey: "dwell")
+        return v > 0.2 ? v : 1.5
+    }()
     static let cooldown: TimeInterval = 0.8
     static let logger = Logger(subsystem: "dev.julian.irisgaze", category: "gaze")
     static let forcedScreen = UserDefaults.standard.string(forKey: "forceScreen").flatMap(Screen.init(rawValue:))
@@ -74,7 +78,13 @@ final class GazeModel {
     var showDebug = false
 
     @ObservationIgnored var layout: GridLayout? {
-        didSet { simulated.tourPoints = layout?.normalizedCenters ?? [] }
+        didSet {
+            simulated.tourPoints = layout?.normalizedCenters ?? []
+            // Reserved regions settle over the first layout passes: retry the restore until the geometry matches.
+            if restorePending, !calibrator.isCalibrated, !isCalibrating, attemptRestore(quiet: true) {
+                restorePending = false
+            }
+        }
     }
     @ObservationIgnored private var dwellZone: Int?
     @ObservationIgnored private var dwellStart = Date.now
@@ -101,6 +111,11 @@ final class GazeModel {
         }
         Task { [weak self] in
             await self?.chooseInitialBackend()
+            self?.attemptRestore()
+            if let say = UserDefaults.standard.string(forKey: "speakTest") {
+                self?.debugSetText(say)
+                self?.speak()
+            }
             if UserDefaults.standard.bool(forKey: "autoCalibrate") {
                 try? await Task.sleep(for: .milliseconds(300))
                 self?.startCalibration()
@@ -167,7 +182,7 @@ final class GazeModel {
         hingeText = "\(Self.statusName(hinge)) \(Int(hinge.angle.degrees.rounded()))°"
         if hinge.status == .closed {
             screen = .idle
-        } else if hinge.status == .fullyOpen {
+        } else if hinge.status == .fullyOpen, !demo {
             screen = .calibration
         } else if !isCalibrating {
             screen = .grid
@@ -199,7 +214,7 @@ final class GazeModel {
 
         let z = calibrator.process(s, layout: layout)
         if zone != z { zone = z }
-        guard screen == .grid, !needsCalibration else {
+        guard screen == .grid, !needsCalibration, !showsStartScreen else {
             dwellProgress = 0
             dwellZone = nil
             return
@@ -209,8 +224,10 @@ final class GazeModel {
             if dwellProgress != 0 { dwellProgress = 0 }
             return
         }
-        if z != dwellZone {
-            dwellZone = z
+        // Dwell target: the cell, or at level 2 the key (a key can span cells). Changing target restarts the ring.
+        let dwellTarget = level2Group.flatMap { Keyboard.key(at: z, group: $0)?.cells.first } ?? z
+        if dwellTarget != dwellZone {
+            dwellZone = dwellTarget
             dwellStart = now
         }
         dwellProgress = min(1, now.timeIntervalSince(dwellStart) / Self.dwellDuration)
@@ -243,6 +260,10 @@ final class GazeModel {
         u.voice = AVSpeechSynthesisVoice(language: "en-US")
         u.rate = 0.5
         synthesizer.speak(u)
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            Self.logger.notice("speaking=\(self?.synthesizer.isSpeaking ?? false)")
+        }
         Self.logger.notice("speak \(t, privacy: .public)")
     }
 
@@ -323,6 +344,65 @@ final class GazeModel {
         }
     }
 
+    // MARK: Demo mode
+
+    /// `-demo YES|NO`; default: on when the Mac backend is active.
+    static let demoFlag: Bool? = UserDefaults.standard.object(forKey: "demo") == nil ? nil : UserDefaults.standard.bool(forKey: "demo")
+    var demo: Bool { Self.demoFlag ?? (backend == .mac) }
+    /// Long-press on the recalibrate button reveals the developer pill / Test overlay.
+    var debugUI = false
+    /// Show developer chrome (pill, bands, cursor, overlay).
+    var chrome: Bool { !demo || debugUI }
+    /// Start screen requested (recalibrate button) even though a model is loaded.
+    private(set) var startRequested = false
+    private(set) var savedCalibrationAvailable = false
+    /// "7 / 16" progress during calibration / validation.
+    private(set) var calibrationStep = 0
+    var calibrationTotal: Int {
+        isValidating ? Self.validationOrder.count : (12 + (includeCorners ? 4 : 0)) * calPasses
+    }
+    /// Demo start screen: shown until calibrated (or when asked for).
+    var showsStartScreen: Bool {
+        demo && !isCalibrating && screen != .idle && (!calibrator.isCalibrated || startRequested)
+    }
+
+    func requestStart() { startRequested = true }
+
+    func beginCalibration() {
+        startRequested = false
+        startCalibration()
+    }
+
+    func useLastCalibration() {
+        if attemptRestore() { startRequested = false }
+    }
+
+    /// Load the saved calibration when its feature layout and grid geometry match.
+    @ObservationIgnored private var restorePending = true
+
+    @discardableResult
+    func attemptRestore(quiet: Bool = false) -> Bool {
+        guard isStarted, let saved = SavedCalibration.load(), let layout else {
+            if !quiet { savedCalibrationAvailable = false }
+            return false
+        }
+        let expected = backend == .mac ? FeatureLayout.mac : backend == .sim ? FeatureLayout.point : saved.names
+        guard saved.names == expected, saved.geometry == SavedCalibration.geometry(of: layout) else {
+            if !quiet {
+                Self.logger.notice("saved calibration does not match: names \(saved.names == expected) geometry \(saved.geometry, privacy: .public) vs \(SavedCalibration.geometry(of: layout), privacy: .public)")
+                savedCalibrationAvailable = false
+            }
+            return false
+        }
+        restorePending = false
+        savedCalibrationAvailable = true
+        let ok = calibrator.restore(saved, layout: layout)
+        if ok, screen == .calibration { screen = .grid }
+        return ok
+    }
+
+    func debugSetText(_ t: String) { text = t }
+
     // MARK: Calibration
 
     /// Snake order: consecutive targets are neighbours; each row is contiguous (for the nod check).
@@ -341,7 +421,7 @@ final class GazeModel {
     /// `-calPasses 2` runs the targets twice.
     var calPasses = max(1, min(2, UserDefaults.standard.integer(forKey: "calPasses")))
     /// 4 extra targets near the grid-area corners (own groups 12...15). `-corners NO` disables.
-    var includeCorners = UserDefaults.standard.object(forKey: "corners") as? Bool ?? true
+    var includeCorners = UserDefaults.standard.object(forKey: "corners") == nil ? true : UserDefaults.standard.bool(forKey: "corners")
 
     /// Normalized target currently shown (cell centre or corner point).
     private(set) var calibrationTarget: CGPoint?
@@ -362,6 +442,7 @@ final class GazeModel {
     func startCalibration() {
         calibrationTask?.cancel()
         calibrator.clear()
+        calibrationStep = 0
         isCalibrating = true
         showDebug = false
         validationAccuracy = nil
@@ -393,6 +474,7 @@ final class GazeModel {
                         var rowPitches: [Double] = []
                         for k in row {
                             guard let target = self.layout?.normalizedCenters[safe: k] else { continue }
+                            self.calibrationStep += 1
                             if let p = await self.calibrateTarget(group: k, cell: k, target: target, pass: pass) {
                                 rowPitches.append(p)
                             }
@@ -415,6 +497,7 @@ final class GazeModel {
                 }
                 if self.includeCorners, let layout = self.layout {
                     for (i, target) in self.cornerTargets(layout: layout).enumerated() {
+                        self.calibrationStep += 1
                         _ = await self.calibrateTarget(group: Self.cornerGroup + i, cell: nil, target: target, pass: pass)
                         if Task.isCancelled { return }
                     }
@@ -423,6 +506,12 @@ final class GazeModel {
             guard let layout = self.layout else { return self.finishCalibration() }
             self.calibrationInstruction = "Fitting…"
             self.calibrator.fit(layout: layout)
+            if let saved = self.calibrator.export(layout: layout) {
+                saved.save()
+                self.savedCalibrationAvailable = true
+                Self.logger.notice("saved calibration (\(saved.frames.count) frames)")
+            }
+            self.calibrationStep = 0
             self.recorder?.write(["type": "fit", "model": self.calibrator.modelDescription,
                                   "calErr": self.calibrator.residualPoints ?? -1, "cv": self.calibrator.cvPoints ?? -1])
             if self.calibrator.isCalibrated {
@@ -443,20 +532,20 @@ final class GazeModel {
             calibrationTarget = target
             simulated.pinnedTourTarget = target
             calibrationPhase = .settle
-            calibrationInstruction = "Point your nose at the target"
+            calibrationInstruction = "Look at the target"
             await pump(seconds: Self.settleSeconds, phase: "settle", cell: group, pass: pass) { _ in }
             calibrationMessage = nil
 
             var still: [[Double]] = [], move: [[Double]] = []
             var frames = 0, lost = 0
             calibrationPhase = .sampling
-            calibrationInstruction = "Hold still — nose and eyes on the target"
+            calibrationInstruction = "Hold still"
             await pump(seconds: Self.stillSeconds, phase: "still", cell: group, pass: pass) { s in
                 frames += 1
                 if !s.faceDetected { lost += 1 } else if !s.blink, let f = s.featureVector { still.append(f) }
             }
             calibrationPhase = .moving
-            calibrationInstruction = "Nod and turn slightly — keep looking at the target"
+            calibrationInstruction = "Nod slightly"
             await pump(seconds: Self.moveSeconds, phase: "move", cell: group, pass: pass) { s in
                 frames += 1
                 if !s.faceDetected { lost += 1 } else if !s.blink, let f = s.featureVector { move.append(f) }
@@ -494,10 +583,11 @@ final class GazeModel {
         for k in Self.validationOrder {
             guard !Task.isCancelled else { return }
             calibratingZone = k
+            calibrationStep += 1
             calibrationTarget = layout.normalizedCenters[safe: k]
             simulated.pinnedTourTarget = calibrationTarget
             calibrationPhase = .settle
-            calibrationInstruction = "Validate: point your nose at the target"
+            calibrationInstruction = "Look at the target"
             await pump(seconds: Self.validationSettleSeconds, phase: "vsettle", cell: k, pass: -1) { _ in }
             calibrationPhase = .validating
             var cellHits = 0, cellTotal = 0
@@ -553,6 +643,8 @@ final class GazeModel {
 
     /// Clears the calibration medians and the implicit (dwell) samples.
     func resetCalibration() {
+        SavedCalibration.delete()
+        savedCalibrationAvailable = false
         calibrationTask?.cancel()
         calibrator.clear()
         validationAccuracy = nil

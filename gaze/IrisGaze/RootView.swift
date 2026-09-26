@@ -15,30 +15,36 @@ struct RootView: View {
             ZStack(alignment: .topLeading) {
                 Theme.background
 
-                switch model.screen {
-                case .idle:
-                    IdleView()
-                case .calibration:
-                    CalibrationView(model: model, layout: layout)
-                case .grid:
-                    GridView(model: model, layout: layout)
-                    if model.needsCalibration, let first = layout.cells.first, let last = layout.cells.last {
-                        CalibrateCallToAction(model: model)
-                            .frame(width: first.union(last).width, height: first.union(last).height)
-                            .offset(x: first.minX, y: first.minY)
+                if model.showsStartScreen {
+                    StartView(model: model)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    switch model.screen {
+                    case .idle:
+                        IdleView()
+                    case .calibration:
+                        CalibrationView(model: model, layout: layout)
+                    case .grid:
+                        GridView(model: model, layout: layout)
+                        if model.needsCalibration, !model.demo, let first = layout.cells.first, let last = layout.cells.last {
+                            CalibrateCallToAction(model: model)
+                                .frame(width: first.union(last).width, height: first.union(last).height)
+                                .offset(x: first.minX, y: first.minY)
+                        }
                     }
-                }
 
-                if model.screen != .idle {
-                    PanelView(model: model, arrangement: layout.arrangement)
-                        .frame(width: layout.panel.width, height: layout.panel.height, alignment: .topLeading)
-                        .offset(x: layout.panel.minX, y: layout.panel.minY)
+                    // Demo calibration: nothing but the targets.
+                    if model.screen != .idle, !(model.demo && model.isCalibrating) {
+                        PanelView(model: model, arrangement: layout.arrangement)
+                            .frame(width: layout.panel.width, height: layout.panel.height, alignment: .topLeading)
+                            .offset(x: layout.panel.minX, y: layout.panel.minY)
 
-                    if model.screen == .grid {
-                        if model.showDebug && model.calibrator.isCalibrated {
-                            DebugOverlay(model: model, layout: layout)
-                        } else if !model.calibrator.isCalibrated && !model.needsCalibration {
-                            GazeCursor(model: model, size: proxy.size)
+                        if model.screen == .grid, model.chrome {
+                            if model.showDebug && model.calibrator.isCalibrated {
+                                DebugOverlay(model: model, layout: layout)
+                            } else if !model.calibrator.isCalibrated && !model.needsCalibration {
+                                GazeCursor(model: model, size: proxy.size)
+                            }
                         }
                     }
                 }

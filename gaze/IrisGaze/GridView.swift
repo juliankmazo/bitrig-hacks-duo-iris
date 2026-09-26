@@ -16,7 +16,7 @@ struct GridView: View {
                 FoldBand(rect: fold, simulated: layout.isSimulatedFold)
             }
             // Very faint row / column feedback: nodding picks the row, the eyes pick the column.
-            if calibrationTarget == nil, !model.needsCalibration, let z = model.zone, layout.cells.count == 12 {
+            if model.chrome, calibrationTarget == nil, !model.needsCalibration, let z = model.zone, layout.cells.count == 12 {
                 let row = (0..<4).map { layout.cells[(z / 4) * 4 + $0] }.reduce(CGRect.null) { $0.union($1) }
                 let col = (0..<3).map { layout.cells[$0 * 4 + z % 4] }.reduce(CGRect.null) { $0.union($1) }
                 RoundedRectangle(cornerRadius: 34)

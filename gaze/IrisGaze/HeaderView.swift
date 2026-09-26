@@ -9,9 +9,32 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             TypedText(model: model)
             Spacer(minLength: 0)
-            StatusPill(model: model)
-                .frame(maxWidth: .infinity)
+            if model.chrome {
+                StatusPill(model: model)
+                    .frame(maxWidth: .infinity)
+            }
+            if model.demo {
+                RecalibrateButton(model: model)
+            }
         }
+    }
+}
+
+/// Discreet way back to the start screen (tap); long-press 1 s toggles the developer pill / Test overlay.
+struct RecalibrateButton: View {
+    let model: GazeModel
+
+    var body: some View {
+        Image(systemName: "arrow.counterclockwise")
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(Theme.muted.opacity(0.7))
+            .frame(width: 28, height: 28)
+            .contentShape(.rect)
+            .onTapGesture {
+                if model.debugUI { model.debugUI = false } else { model.requestStart() }
+            }
+            .onLongPressGesture(minimumDuration: 1) { model.debugUI.toggle() }
+            .accessibilityLabel("Recalibrate")
     }
 }
 

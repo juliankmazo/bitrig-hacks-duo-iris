@@ -13,6 +13,7 @@ targets:
         UILaunchScreen: {}
         UIApplicationSceneManifest: { UIApplicationSupportsMultipleScenes: true }
         NSCameraUsageDescription: "IrisGaze uses the front camera to track where you are looking so you can select keys with your eyes."
+        NSAppTransportSecurity: { NSAllowsLocalNetworking: true }
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortraitUpsideDown]
     settings:
       base:

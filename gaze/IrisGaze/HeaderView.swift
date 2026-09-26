@@ -1,64 +1,92 @@
 import SwiftUI
 
-/// Top strip: selection readout + log on the leading side, status tile + controls trailing.
-/// Leading/trailing keeps both halves on their own side of a vertical fold.
-struct HeaderView: View {
-    @Bindable var model: GazeModel
+/// Selection readout, log and status pill. In laptop pose this fills the flat bottom (table) region.
+struct PanelView: View {
+    let model: GazeModel
+    let arrangement: GridLayout.Arrangement
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("selected: \(model.selected ?? "–")")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                Text(model.log.isEmpty ? "log: –" : "log: " + model.log.suffix(24).joined(separator: " "))
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
+        if arrangement == .laptop {
+            VStack(alignment: .leading, spacing: 10) {
+                readout
+                Spacer(minLength: 0)
+                StatusPill(model: model)
+                    .frame(maxWidth: .infinity)
             }
-            Spacer(minLength: 8)
-            StatusTile(model: model)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                readout
+                StatusPill(model: model)
+            }
         }
-        .foregroundStyle(.white)
+    }
+
+    private var readout: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("selected: \(model.selected ?? "–")")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            Text(model.log.isEmpty ? "log: –" : "log: " + model.log.suffix(12).joined(separator: " · "))
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(Theme.muted)
+                .lineLimit(1)
+                .truncationMode(.head)
+        }
+        .foregroundStyle(Theme.text)
     }
 }
 
-struct StatusTile: View {
-    @Bindable var model: GazeModel
+struct StatusPill: View {
+    let model: GazeModel
 
     var body: some View {
         let s = model.source.sample
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Label(model.source.name, systemImage: "camera")
-                Text("face \(s.faceDetected ? "✓" : "✗")  blink \(s.blink ? "●" : "○")")
-                Text("calibrated \(model.calibrator.calibratedCount)/12")
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                Button(model.backend.title, systemImage: "arrow.triangle.2.circlepath.camera") { model.cycleBackend() }
+                    .buttonStyle(.bordered)
+                    .tint(Theme.glow)
+                    .labelStyle(.titleAndIcon)
+                    .fixedSize()
+                indicator("face", on: s.faceDetected, color: .green)
+                indicator("blink", on: s.blink, color: .yellow)
+                Text("cal \(model.calibrator.calibratedCount)/12")
+                Text("\(model.fps) fps")
                 Text(model.hingeText)
+                    .foregroundStyle(Theme.muted)
             }
-            .font(.caption.monospaced())
-            .fixedSize()
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Toggle("Tour", isOn: Binding(get: { model.simulated.tourEnabled }, set: { model.simulated.tourEnabled = $0 }))
-                    .toggleStyle(.button)
-                    .disabled(!model.usingSimulated)
-                HStack(spacing: 4) {
-                    Button("Cal", systemImage: "scope") { model.startCalibration() }
-                        .labelStyle(.titleOnly)
-                    Button("Clear", systemImage: "trash") { model.clearLog() }
-                        .labelStyle(.titleOnly)
+            .font(.caption.monospacedDigit())
+            HStack(spacing: 8) {
+                Button("Calibrate", systemImage: "scope") { model.startCalibration() }
+                    .tint(Theme.look)
+                Button("Test", systemImage: "play") { model.test() }
+                Button("Reset cal", systemImage: "arrow.counterclockwise") { model.resetCalibration() }
+                if model.usingSimulated {
+                    Toggle("Tour", systemImage: "figure.walk",
+                           isOn: Binding(get: { model.simulated.tourEnabled }, set: { model.simulated.tourEnabled = $0 }))
+                        .toggleStyle(.button)
                 }
-                Toggle("Sim", isOn: Binding(get: { model.usingSimulated }, set: { model.useSimulated($0) }))
-                    .toggleStyle(.button)
+                Button("Clear", systemImage: "trash") { model.clearLog() }
             }
             .buttonStyle(.bordered)
-            .controlSize(.mini)
+            .labelStyle(.titleOnly)
             .font(.caption)
-            .fixedSize()
         }
-        .padding(10)
-        .background(.white.opacity(0.08), in: .rect(cornerRadius: 14))
+        .controlSize(.small)
+        .lineLimit(1)
+        .fixedSize()
+        .foregroundStyle(Theme.text)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Theme.panel, in: .capsule)
+        .overlay(Capsule().strokeBorder(Theme.cellBorder))
+    }
+
+    private func indicator(_ title: String, on: Bool, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(on ? color : Color.gray.opacity(0.4)).frame(width: 9, height: 9)
+            Text(title)
+        }
     }
 }

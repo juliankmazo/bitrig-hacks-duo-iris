@@ -6,19 +6,44 @@ enum Screen: String {
     case idle, calibration, grid
 }
 
+enum Backend: String, CaseIterable {
+    case sim, mac, device
+
+    var title: String {
+        switch self {
+        case .sim: "Sim"
+        case .mac: "Mac"
+        case .device: "Device"
+        }
+    }
+}
+
 /// Pipeline: source sample -> calibrator (EMA, nearest centroid / direct, hysteresis) -> dwell.
 @Observable
 @MainActor
 final class GazeModel {
-    static let labels = (0..<12).map { String(UnicodeScalar(UInt8(65 + $0))) } // A...L
+    static let cells = GridCell.all
     static let dwellDuration: TimeInterval = 1.0
     static let cooldown: TimeInterval = 0.8
+    static let settle: Duration = .milliseconds(700)
     static let logger = Logger(subsystem: "dev.julian.irisgaze", category: "gaze")
+    static let forcedScreen = UserDefaults.standard.string(forKey: "forceScreen").flatMap(Screen.init(rawValue:))
+    static let launchBackend = UserDefaults.standard.string(forKey: "backend").flatMap(Backend.init(rawValue:))
 
     let simulated = SimulatedGazeSource()
+    let mac = MacGazeSource()
     let device = DeviceGazeSource()
-    private(set) var source: any GazeSource
-    var usingSimulated: Bool { source === simulated }
+    private(set) var backend: Backend = .sim
+    var source: any GazeSource {
+        switch backend {
+        case .sim: simulated
+        case .mac: mac
+        case .device: device
+        }
+    }
+    var usingSimulated: Bool { backend == .sim }
+    /// Raw-feature backends are not screen aligned: they need calibration.
+    var needsCalibration: Bool { backend != .sim && !calibrator.isCalibrated }
 
     let calibrator = GazeCalibrator()
 
@@ -27,11 +52,10 @@ final class GazeModel {
 
     private(set) var zone: Int?
     private(set) var dwellProgress: Double = 0
-    private(set) var inCooldown = false
     private(set) var selected: String?
     private(set) var log: [String] = []
-    /// The cell that just fired, for a flash.
     private(set) var flashZone: Int?
+    private(set) var fps: Int = 0
 
     // Calibration state
     private(set) var calibratingZone: Int?
@@ -39,56 +63,79 @@ final class GazeModel {
     private(set) var isCalibrating = false
 
     @ObservationIgnored var layout: GridLayout? {
-        didSet {
-            simulated.tourPoints = layout?.normalizedCenters ?? []
-            if let layout {
-                Self.logger.notice("layout size=\(String(describing: layout.size), privacy: .public) foldGap=\(String(describing: layout.foldGap), privacy: .public) cell0=\(String(describing: layout.cells.first), privacy: .public)")
-            }
-        }
+        didSet { simulated.tourPoints = layout?.normalizedCenters ?? [] }
     }
     @ObservationIgnored private var dwellZone: Int?
     @ObservationIgnored private var dwellStart = Date.now
     @ObservationIgnored private var cooldownUntil = Date.distantPast
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var calibrationTask: Task<Void, Never>?
-
-    static let forcedScreen = UserDefaults.standard.string(forKey: "forceScreen").flatMap(Screen.init(rawValue:))
+    @ObservationIgnored private var lastSample = GazeSample.none
+    @ObservationIgnored private var sampleCount = 0
+    @ObservationIgnored private var fpsWindowStart = Date.now
 
     init() {
-        #if targetEnvironment(simulator)
-        source = simulated
-        #else
-        source = device
-        #endif
         if let forced = Self.forcedScreen { screen = forced }
         // `-tour YES` starts the demo tour at launch (hands-free recording).
         simulated.tourEnabled = UserDefaults.standard.bool(forKey: "tour")
     }
 
     func start() {
-        source.start()
         guard loop == nil else { return }
-        if UserDefaults.standard.bool(forKey: "autoCalibrate") {
-            Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(500))  // wait for first real layout
-                self?.startCalibration()
-            }
-        }
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 self?.tick()
                 try? await Task.sleep(for: .milliseconds(16))
             }
         }
+        Task { [weak self] in
+            await self?.chooseInitialBackend()
+            if UserDefaults.standard.bool(forKey: "autoCalibrate") {
+                try? await Task.sleep(for: .milliseconds(300))
+                self?.startCalibration()
+            }
+        }
     }
 
-    func useSimulated(_ on: Bool) {
-        let next: any GazeSource = on ? simulated : device
-        guard next !== source else { return }
+    /// `-backend mac|sim|device`; default: Mac if its websocket connects within 2 s, else sim (device on hardware).
+    private func chooseInitialBackend() async {
+        if let forced = Self.launchBackend {
+            setBackend(forced)
+            return
+        }
+        setBackend(.mac)
+        for _ in 0..<20 where !mac.isConnected {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if !mac.isConnected {
+            #if targetEnvironment(simulator)
+            setBackend(.sim)
+            #else
+            setBackend(.device)
+            #endif
+        }
+        Self.logger.notice("backend: \(self.backend.rawValue, privacy: .public)")
+    }
+
+    func setBackend(_ next: Backend) {
+        if isStarted, next == backend { return }
         source.stop()
-        source = next
+        backend = next
         calibrator.clearCentroids()
         source.start()
+        isStarted = true
+    }
+    @ObservationIgnored private var isStarted = false
+
+    /// Status-tile button: Sim -> Mac (-> Device on hardware) -> Sim.
+    func cycleBackend() {
+        #if targetEnvironment(simulator)
+        let order: [Backend] = [.sim, .mac]
+        #else
+        let order: [Backend] = [.sim, .mac, .device]
+        #endif
+        let i = order.firstIndex(of: backend) ?? 0
+        setBackend(order[(i + 1) % order.count])
     }
 
     // MARK: Hinge
@@ -97,7 +144,7 @@ final class GazeModel {
         Self.logger.notice("hinge: \(String(describing: hinge), privacy: .public)")
         if let forced = Self.forcedScreen {
             // Debug/recording override: `-forceScreen grid|calibration|idle` pins the screen.
-            hingeText = hinge.map { "\($0.status == .closed ? "closed" : $0.status == .fullyOpen ? "flat" : "book") \(Int($0.angle.degrees))° (pinned)" } ?? "hinge: none"
+            hingeText = hinge.map { "\(Self.statusName($0)) \(Int($0.angle.degrees))° (pinned)" } ?? "hinge: none"
             screen = forced
             return
         }
@@ -106,33 +153,40 @@ final class GazeModel {
             if screen == .idle { screen = .grid }
             return
         }
-        let deg = Int(hinge.angle.degrees.rounded())
+        hingeText = "\(Self.statusName(hinge)) \(Int(hinge.angle.degrees.rounded()))°"
         if hinge.status == .closed {
-            hingeText = "closed \(deg)°"
             screen = .idle
         } else if hinge.status == .fullyOpen {
-            hingeText = "flat \(deg)°"
             screen = .calibration
-        } else {
-            hingeText = "book \(deg)°"
-            if !isCalibrating { screen = .grid }
+        } else if !isCalibrating {
+            screen = .grid
         }
+    }
+
+    private static func statusName(_ h: DeviceHinge) -> String {
+        h.status == .closed ? "closed" : h.status == .fullyOpen ? "flat" : "folded"
     }
 
     // MARK: Pipeline
 
     private func tick() {
         let s = source.sample
+        let now = Date.now
+        if s != lastSample { sampleCount += 1; lastSample = s }
+        if now.timeIntervalSince(fpsWindowStart) >= 1 {
+            fps = sampleCount
+            sampleCount = 0
+            fpsWindowStart = now
+        }
+
         let z = calibrator.process(s.point) { [layout] p in layout?.zone(forNormalized: p) }
         if zone != z { zone = z }
-        guard screen == .grid else {
+        guard screen == .grid, !needsCalibration else {
             dwellProgress = 0
             dwellZone = nil
             return
         }
-        let now = Date.now
-        inCooldown = now < cooldownUntil
-        guard let z, !inCooldown else {
+        guard let z, now >= cooldownUntil, Self.cells[safe: z]?.isSelectable == true else {
             dwellZone = nil
             if dwellProgress != 0 { dwellProgress = 0 }
             return
@@ -151,11 +205,12 @@ final class GazeModel {
     }
 
     func select(_ z: Int) {
-        guard Self.labels.indices.contains(z) else { return }
-        selected = Self.labels[z]
-        log.append(Self.labels[z])
+        guard let cell = Self.cells[safe: z], cell.isSelectable else { return }
+        selected = cell.logLabel
+        log.append(cell.logLabel)
         if log.count > 40 { log.removeFirst(log.count - 40) }
         flashZone = z
+        Self.logger.notice("selected \(cell.logLabel, privacy: .public)")
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             if self?.flashZone == z { self?.flashZone = nil }
@@ -182,7 +237,7 @@ final class GazeModel {
                 self.calibrationProgress = 0
                 self.simulated.pinnedTourTarget = self.layout?.normalizedCenters[safe: k]
                 // Settle: let the eyes land on the dot.
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: Self.settle)
                 var samples: [CGPoint] = []
                 let started = Date.now
                 // ~30 samples over ~1.5 s (20 Hz); give up after 3 s if the face is lost.
@@ -192,16 +247,25 @@ final class GazeModel {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 self.calibrator.setCentroid(zone: k, samples: samples)
+                Self.logger.notice("cal zone \(k) n=\(samples.count)")
             }
             self.finishCalibration()
         }
     }
 
-    func skipCalibration() {
+    /// "Test": leave calibration and go try the grid.
+    func test() {
+        calibrationTask?.cancel()
+        finishCalibration()
+    }
+
+    func resetCalibration() {
         calibrationTask?.cancel()
         calibrator.clearCentroids()
         finishCalibration()
     }
+
+    func skipCalibration() { resetCalibration() }
 
     private func finishCalibration() {
         isCalibrating = false

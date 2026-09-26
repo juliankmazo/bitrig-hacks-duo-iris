@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct RootView: View {
-    @Bindable var model: GazeModel
+    let model: GazeModel
 
     var body: some View {
         GeometryReader { proxy in
@@ -9,10 +9,11 @@ struct RootView: View {
             let layout = GridLayout.make(
                 size: proxy.size,
                 divisions: proxy.reservedRegions(kind: .division),
-                occlusions: proxy.reservedRegions(kind: .occlusion)
+                occlusions: proxy.reservedRegions(kind: .occlusion),
+                simulatedPose: SimulatedPose.launchValue
             )
             ZStack(alignment: .topLeading) {
-                Color.black
+                Theme.background
 
                 switch model.screen {
                 case .idle:
@@ -21,14 +22,21 @@ struct RootView: View {
                     CalibrationView(model: model, layout: layout)
                 case .grid:
                     GridView(model: model, layout: layout)
+                    if model.needsCalibration, let first = layout.cells.first, let last = layout.cells.last {
+                        CalibrateCallToAction(model: model)
+                            .frame(width: first.union(last).width, height: first.union(last).height)
+                            .offset(x: first.minX, y: first.minY)
+                    }
                 }
 
                 if model.screen != .idle {
-                    HeaderView(model: model)
-                        .frame(width: layout.header.width, height: layout.header.height)
-                        .offset(x: layout.header.minX, y: layout.header.minY)
+                    PanelView(model: model, arrangement: layout.arrangement)
+                        .frame(width: layout.panel.width, height: layout.panel.height, alignment: .topLeading)
+                        .offset(x: layout.panel.minX, y: layout.panel.minY)
 
-                    GazeCursor(model: model, size: proxy.size)
+                    if !model.calibrator.isCalibrated && !model.needsCalibration && model.screen == .grid {
+                        GazeCursor(model: model, size: proxy.size)
+                    }
                 }
             }
             .coordinateSpace(.named("root"))
@@ -47,7 +55,36 @@ struct RootView: View {
     }
 }
 
-/// Where the model thinks you are looking (smoothed).
+/// Shown over the grid when a raw-feature backend (Mac webcam / device) is active but not calibrated.
+struct CalibrateCallToAction: View {
+    let model: GazeModel
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("\(model.source.name) connected")
+                .font(.headline)
+                .foregroundStyle(Theme.muted)
+            Button {
+                model.startCalibration()
+            } label: {
+                Label("Calibrate", systemImage: "scope")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 14)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.look)
+            Text("Look at 12 cells, one at a time (\(model.calibrator.calibratedCount)/12)")
+                .font(.callout)
+                .foregroundStyle(Theme.muted)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.background.opacity(0.8), in: .rect(cornerRadius: 20))
+    }
+}
+
+/// Where the model thinks you are looking (smoothed, uncalibrated/direct mapping only).
 struct GazeCursor: View {
     let model: GazeModel
     let size: CGSize
@@ -56,7 +93,7 @@ struct GazeCursor: View {
         if let p = model.calibrator.smoothed {
             Circle()
                 .strokeBorder(.white.opacity(0.9), lineWidth: 2)
-                .background(Circle().fill(.cyan.opacity(0.25)))
+                .background(Circle().fill(Theme.glow.opacity(0.25)))
                 .frame(width: 28, height: 28)
                 .position(x: p.x * size.width, y: p.y * size.height)
                 .allowsHitTesting(false)

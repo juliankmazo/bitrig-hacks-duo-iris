@@ -1,0 +1,14 @@
+[project]
+name = "irisgaze-mac"
+version = "0.1.0"
+description = "Mac webcam gaze streamer for the IrisGaze simulator build"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mediapipe==0.10.21",  # pinned: 1.0.x crashes ("graph_service Service is unavailable")
+    "opencv-python>=4.9",
+    "numpy>=1.26,<2",
+    "websockets>=13",
+]
+
+[tool.uv]
+package = false

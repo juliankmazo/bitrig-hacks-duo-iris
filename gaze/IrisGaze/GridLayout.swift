@@ -1,78 +1,120 @@
 import CoreGraphics
 import SwiftUI
 
+/// Pose used when the system reports no active division (flat, or the simulator).
+enum SimulatedPose: String {
+    case laptop, book, flat
+
+    static let launchValue = UserDefaults.standard.string(forKey: "pose").flatMap(SimulatedPose.init(rawValue:)) ?? .laptop
+}
+
 /// Fold-aware 4x3 grid geometry. Recomputed on every layout pass from the live
 /// reserved regions (never cached: they are empty on the first pass).
+///
+/// - Horizontal fold (laptop): grid in the upright TOP region, panel on the flat BOTTOM region.
+/// - Vertical fold (book): panel on top, grid below with 2 columns per side and a wide crease gap.
+/// - No active division: falls back to `SimulatedPose` so the simulator matches the demo.
 struct GridLayout: Equatable {
     static let columns = 4
     static let rows = 3
 
+    enum Arrangement: String { case laptop, book, flat }
+
     var size: CGSize
     var cells: [CGRect]
-    var header: CGRect
-    /// The fold gap between column 2 and 3 when a vertical division is active.
-    var foldGap: CGRect?
+    /// The status/selection panel (bottom region in laptop pose, a top strip otherwise).
+    var panel: CGRect
+    /// The crease the grid avoids (real division frame, or the simulated one).
+    var fold: CGRect?
+    var arrangement: Arrangement
+    var isSimulatedFold: Bool
 
     static func make(size: CGSize,
                      divisions: [ReservedRegion],
                      occlusions: [ReservedRegion],
-                     headerHeight: CGFloat = 96) -> GridLayout {
+                     simulatedPose: SimulatedPose) -> GridLayout {
         let outer: CGFloat = 16
         let gap: CGFloat = 12
+        let headerHeight: CGFloat = 175
 
-        // Inset for occlusions (inner camera): push the nearest edge past the region + margins.
+        // Inset for occlusions (cameras): give up a strip of height unless the region is a tall side strip.
         var top = outer, bottom = outer, left = outer, right = outer
         for r in occlusions where r.isActive {
-            let f = r.frame
-            let m = r.margins
-            let dTop = f.minY, dBottom = size.height - f.maxY
-            let dLeft = f.minX, dRight = size.width - f.maxX
-            // Cameras sit in a corner/edge: prefer giving up a strip of height (keeps 4 even
-            // columns) unless the region is tall and thin along a side.
-            let isTallSideRegion = f.height > size.height / 3
-            if !isTallSideRegion {
-                if dTop <= dBottom { top = max(top, f.maxY + m.bottom) }
+            let f = r.frame, m = r.margins
+            if f.height <= size.height / 3 {
+                if f.minY <= size.height - f.maxY { top = max(top, f.maxY + m.bottom) }
                 else { bottom = max(bottom, size.height - f.minY + m.top) }
-            } else if dLeft <= dRight {
+            } else if f.minX <= size.width - f.maxX {
                 left = max(left, f.maxX + m.trailing)
             } else {
                 right = max(right, size.width - f.minX + m.leading)
             }
         }
-
         let content = CGRect(x: left, y: top,
                              width: max(0, size.width - left - right),
                              height: max(0, size.height - top - bottom))
-        let header = CGRect(x: content.minX, y: content.minY, width: content.width, height: headerHeight)
-        let gridY = content.minY + headerHeight + gap
-        let gridH = max(0, content.maxY - gridY)
-        let rowH = max(0, (gridH - gap * CGFloat(rows - 1)) / CGFloat(rows))
 
-        // Vertical fold (book pose): 2 columns per side, the gap widened to clear the crease.
-        let fold = divisions.first { $0.isActive && $0.frame.height >= $0.frame.width && $0.frame.width > 0 }
-        var xs: [(CGFloat, CGFloat)] = []  // (minX, width) per column
-        var foldGap: CGRect?
-        if let fold, fold.frame.midX > content.minX, fold.frame.midX < content.maxX {
-            let leftEnd = min(fold.frame.minX - max(fold.margins.leading, gap / 2), content.maxX)
-            let rightStart = max(fold.frame.maxX + max(fold.margins.trailing, gap / 2), content.minX)
-            let lw = max(0, (leftEnd - content.minX - gap) / 2)
-            let rw = max(0, (content.maxX - rightStart - gap) / 2)
-            xs = [(content.minX, lw), (content.minX + lw + gap, lw),
-                  (rightStart, rw), (rightStart + rw + gap, rw)]
-            foldGap = CGRect(x: leftEnd, y: gridY, width: rightStart - leftEnd, height: gridH)
+        // Real division first; otherwise simulate one for the chosen pose.
+        var arrangement: Arrangement
+        var fold: CGRect?
+        var foldMargins = EdgeInsets(top: gap, leading: gap, bottom: gap, trailing: gap)
+        var simulated = false
+        if let d = divisions.first(where: { $0.isActive && ($0.frame.width > 0 || $0.frame.height > 0) }) {
+            fold = d.frame
+            foldMargins = d.margins
+            arrangement = d.frame.width > d.frame.height ? .laptop : .book
         } else {
-            let cw = max(0, (content.width - gap * CGFloat(columns - 1)) / CGFloat(columns))
-            xs = (0..<columns).map { (content.minX + CGFloat($0) * (cw + gap), cw) }
+            simulated = true
+            switch simulatedPose {
+            case .laptop:
+                arrangement = .laptop
+                fold = CGRect(x: 0, y: content.midY - 14, width: size.width, height: 28)
+            case .book:
+                arrangement = .book
+                fold = CGRect(x: content.midX - 14, y: 0, width: 28, height: size.height)
+            case .flat:
+                arrangement = .flat
+            }
         }
 
+        var gridRect: CGRect
+        var panel: CGRect
+        switch arrangement {
+        case .laptop:
+            let f = fold!
+            let gridBottom = max(content.minY, f.minY - max(foldMargins.top, gap))
+            let panelTop = min(content.maxY, f.maxY + max(foldMargins.bottom, gap))
+            gridRect = CGRect(x: content.minX, y: content.minY, width: content.width, height: gridBottom - content.minY)
+            panel = CGRect(x: content.minX, y: panelTop, width: content.width, height: content.maxY - panelTop)
+        case .book, .flat:
+            panel = CGRect(x: content.minX, y: content.minY, width: content.width, height: headerHeight)
+            let y = content.minY + headerHeight + gap
+            gridRect = CGRect(x: content.minX, y: y, width: content.width, height: max(0, content.maxY - y))
+        }
+
+        // Columns: split 2 + 2 around a vertical fold, else even.
+        var xs: [(CGFloat, CGFloat)]
+        if arrangement == .book, let f = fold, f.midX > gridRect.minX, f.midX < gridRect.maxX {
+            let leftEnd = f.minX - max(foldMargins.leading, gap / 2)
+            let rightStart = f.maxX + max(foldMargins.trailing, gap / 2)
+            let lw = max(0, (leftEnd - gridRect.minX - gap) / 2)
+            let rw = max(0, (gridRect.maxX - rightStart - gap) / 2)
+            xs = [(gridRect.minX, lw), (gridRect.minX + lw + gap, lw),
+                  (rightStart, rw), (rightStart + rw + gap, rw)]
+        } else {
+            let cw = max(0, (gridRect.width - gap * CGFloat(columns - 1)) / CGFloat(columns))
+            xs = (0..<columns).map { (gridRect.minX + CGFloat($0) * (cw + gap), cw) }
+        }
+        let rowH = max(0, (gridRect.height - gap * CGFloat(rows - 1)) / CGFloat(rows))
         var cells: [CGRect] = []
         for r in 0..<rows {
             for c in 0..<columns {
-                cells.append(CGRect(x: xs[c].0, y: gridY + CGFloat(r) * (rowH + gap),
+                cells.append(CGRect(x: xs[c].0, y: gridRect.minY + CGFloat(r) * (rowH + gap),
                                     width: xs[c].1, height: rowH))
             }
         }
-        return GridLayout(size: size, cells: cells, header: header, foldGap: foldGap)
+        return GridLayout(size: size, cells: cells, panel: panel, fold: fold,
+                          arrangement: arrangement, isSimulatedFold: simulated)
     }
 
     /// Normalized cell centers (tour targets, calibration dots).
@@ -86,7 +128,6 @@ struct GridLayout: Equatable {
         guard size.width > 0, !cells.isEmpty else { return nil }
         let pt = CGPoint(x: p.x * size.width, y: p.y * size.height)
         if let hit = cells.firstIndex(where: { $0.contains(pt) }) { return hit }
-        // In a gap or header: nearest cell center.
         return cells.indices.min { a, b in
             let ca = cells[a], cb = cells[b]
             return hypot(ca.midX - pt.x, ca.midY - pt.y) < hypot(cb.midX - pt.x, cb.midY - pt.y)

@@ -18,7 +18,9 @@ final class SimulatedGazeSource: GazeSource {
     var tourPoints: [CGPoint] = []
     /// When non-nil, the tour follows this point instead (calibration dot).
     var pinnedTourTarget: CGPoint?
-    var tourDwell: TimeInterval = 1.3
+    /// 1.3 s per cell can't coexist with 1.0 s dwell + 0.8 s cooldown (every other cell got skipped),
+    /// so the tour waits 2.0 s per cell.
+    var tourDwell: TimeInterval = 2.0
     var jitter: CGFloat = 0.012
 
     private var current: CGPoint?

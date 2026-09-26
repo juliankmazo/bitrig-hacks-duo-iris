@@ -11,7 +11,7 @@
     uv run --python 3.12 tracker/server.py --mode head     # nose-pointer fallback
     uv run --python 3.12 tracker/server.py --cal-hold      # old still-head calibration (24 frames/point)
 
-Calibration is head-tolerant by default: ~3 s per point while the user gently moves the head, plus a
+Calibration is head-tolerant by default: ~2.5 s per point while the user gently moves the head, plus a
 4 s "head sweep" on a central dot. Every calibration / zone-test frame is logged to cal_samples.jsonl /
 test_samples.jsonl so tune.py can compare models offline.
 
@@ -21,8 +21,15 @@ HTTP      http://127.0.0.1:8766/  demo UI, /outer.html simulated outer display
 
 from __future__ import annotations
 
-import argparse
-import asyncio
+import os
+
+# Single-threaded BLAS: the calibration fit is tiny, and multi-threaded BLAS next to MediaPipe's worker
+# threads turned a 30 ms fit into 5 s of camera-thread stall. Must be set before numpy is imported.
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
+import argparse  # noqa: E402
+import asyncio  # noqa: E402
 import functools
 import http.server
 import json
@@ -130,7 +137,7 @@ class Hub:
         self.camera = "none"
         self.cols, self.rows = 4, 3
         # calibration flow settings (sent to the UI in `config`)
-        self.cal_frames, self.cal_settle, self.cal_hold = 90, 0.4, False
+        self.cal_frames, self.cal_settle, self.cal_hold = 75, 0.4, False
         self.sweep_frames, self.cal_sweep, self.cal_corners = 120, True, False
         self.model_name = "none"
         # recording
@@ -408,6 +415,7 @@ def synthetic_loop(hub: Hub) -> None:
                           "n": req.n, "settling": elapsed < req.settle})
             if req.count >= req.n:
                 hub.cal_request = None
+                hub.cal_points = hub.cols * hub.rows
                 if req.loop and req.future:
                     req.loop.call_soon_threadsafe(req.future.set_result, {
                         "count": req.count, "points": hub.cols * hub.rows, "fitted": True, "model": "synthetic"})
@@ -638,7 +646,7 @@ def main() -> None:
                     help="calibration model; auto = best leave-one-point-out candidate")
     ap.add_argument("--cal-hold", action="store_true",
                     help="old still-head calibration: 24 frames/point, 0.35 s settle, corner points, no sweep")
-    ap.add_argument("--cal-frames", type=int, default=None, help="frames per calibration point (default 90, 24 with --cal-hold)")
+    ap.add_argument("--cal-frames", type=int, default=None, help="frames per calibration point (default 75 ≈ 2.5 s, whole flow ≈ 49 s; 24 with --cal-hold)")
     ap.add_argument("--cal-settle", type=float, default=None, help="seconds discarded after each dot appears (0.4)")
     ap.add_argument("--sweep-frames", type=int, default=120, help="frames in the head-sweep stage (~4 s)")
     ap.add_argument("--no-sweep", action="store_true", help="skip the head-sweep stage")
@@ -653,7 +661,7 @@ def main() -> None:
     hub.mode = args.mode
     hub.cols, hub.rows = args.cols, args.rows
     hub.cal_hold = args.cal_hold
-    hub.cal_frames = args.cal_frames or (24 if args.cal_hold else 90)
+    hub.cal_frames = args.cal_frames or (24 if args.cal_hold else 75)
     hub.cal_settle = args.cal_settle if args.cal_settle is not None else (0.35 if args.cal_hold else 0.4)
     hub.cal_sweep = not (args.no_sweep or args.cal_hold)
     hub.cal_corners = args.cal_corners or args.cal_hold
@@ -664,6 +672,7 @@ def main() -> None:
                                                                     model=args.model)
     hub.cal_points = model.n_points if model.ready else 0
     hub.model_name = model.name
+    hub.next_point = max(model.groups, default=-1) + 1   # new points extend a loaded calibration
     if model.ready:
         print(f"[cal] loaded {CAL_PATH.name}: {model.n_points} points, {len(model.samples)} samples, "
               f"model {model.name}", flush=True)

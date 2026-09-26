@@ -225,7 +225,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cal", type=Path, default=HERE / "cal_samples.jsonl")
     ap.add_argument("--test", type=Path, default=HERE / "test_samples.jsonl")
-    ap.add_argument("--session", help="calibration session id (default: latest with frames)")
+    ap.add_argument("--session", help="calibration session id (default: latest with >= 4 points)")
     ap.add_argument("--list", action="store_true", help="list sessions and test runs")
     ap.add_argument("--models", default=",".join(AUTO_CANDIDATES), help=f"comma list from {', '.join(SPECS)}")
     ap.add_argument("--lambdas", default=",".join(f"{v:g}" for v in DEFAULT_LAMBDAS))
@@ -275,7 +275,8 @@ def main() -> None:
             print("no calibration frames yet: calibrate in the UI (space) with the server running, or use --synthetic")
         return
 
-    session = args.session or list(by_session)[-1]
+    full = [k for k, v in by_session.items() if len({r["point"] for r in v}) >= 4]
+    session = args.session or (full or list(by_session))[-1]
     recs = by_session[session]
     F, T, G, S = cal_arrays(recs, args.recompute, args.settle)
     if args.no_sweep and len(S):

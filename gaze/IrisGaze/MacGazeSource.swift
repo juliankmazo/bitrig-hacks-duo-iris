@@ -26,6 +26,8 @@ final class MacGazeSource: GazeSource {
         let blink: Bool
         let face: Bool
         let f: [Double]?
+        let fl: [Double]?
+        let fr: [Double]?
         let seq: Int?
     }
 
@@ -73,8 +75,11 @@ final class MacGazeSource: GazeSource {
             if !m.face {
                 sample = GazeSample(point: nil, blink: false, faceDetected: false)
             } else if let f = m.f {
+                // [eye_x, eye_y, yaw, pitch, roll] + per-eye [lx, ly, rx, ry] when the server sends them.
+                var features = f
+                if let fl = m.fl, let fr = m.fr, fl.count == 2, fr.count == 2 { features += fl + fr }
                 sample = GazeSample(point: CGPoint(x: (m.x + 1) / 2, y: (m.y + 1) / 2),
-                                    features: f, blink: m.blink, faceDetected: true)
+                                    features: features, blink: m.blink, faceDetected: true)
             } else {
                 // Eyes closed: the server drops the frame's features. Hold the last point, flag the blink.
                 sample.blink = true

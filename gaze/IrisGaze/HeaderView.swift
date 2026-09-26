@@ -56,6 +56,10 @@ struct StatusPill: View {
                     Text("cal err \(Int(err.rounded()))px")
                         .foregroundStyle(err < 30 ? .green : err < 60 ? .yellow : .red)
                 }
+                if let val = model.validationAccuracy {
+                    Text("val \(Int((val * 100).rounded()))%")
+                        .foregroundStyle(val >= 0.8 ? .green : val >= 0.5 ? .yellow : .red)
+                }
                 Text("\(model.fps) fps")
                 Text(model.hingeText)
                     .foregroundStyle(Theme.muted)
@@ -68,6 +72,7 @@ struct StatusPill: View {
                        isOn: Binding(get: { model.showDebug }, set: { _ in model.test() }))
                     .toggleStyle(.button)
                 Button("Reset cal", systemImage: "arrow.counterclockwise") { model.resetCalibration() }
+                Button("\(model.calPasses)× pass", systemImage: "repeat") { model.calPasses = model.calPasses == 1 ? 2 : 1 }
                 if model.usingSimulated {
                     Toggle("Tour", systemImage: "figure.walk",
                            isOn: Binding(get: { model.simulated.tourEnabled }, set: { model.simulated.tourEnabled = $0 }))

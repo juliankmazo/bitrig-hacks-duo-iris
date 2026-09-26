@@ -5,7 +5,10 @@ import SwiftUI
 enum SimulatedPose: String {
     case laptop, book, flat
 
-    static let launchValue = UserDefaults.standard.string(forKey: "pose").flatMap(SimulatedPose.init(rawValue:)) ?? .laptop
+    /// `-pose laptop|book|flat`. `flat` forces the flat layout even when a fold region is active
+    /// (Julian holds the phone fully open); otherwise real fold regions win and this only fills in.
+    static let forced = UserDefaults.standard.string(forKey: "pose").flatMap(SimulatedPose.init(rawValue:))
+    static let launchValue = forced ?? .flat
 }
 
 /// Fold-aware 4x3 grid geometry. Recomputed on every layout pass from the live
@@ -59,7 +62,8 @@ struct GridLayout: Equatable {
         var fold: CGRect?
         var foldMargins = EdgeInsets(top: gap, leading: gap, bottom: gap, trailing: gap)
         var simulated = false
-        if let d = divisions.first(where: { $0.isActive && ($0.frame.width > 0 || $0.frame.height > 0) }) {
+        if SimulatedPose.forced != .flat,
+           let d = divisions.first(where: { $0.isActive && ($0.frame.width > 0 || $0.frame.height > 0) }) {
             fold = d.frame
             foldMargins = d.margins
             arrangement = d.frame.width > d.frame.height ? .laptop : .book
@@ -86,7 +90,13 @@ struct GridLayout: Equatable {
             let panelTop = min(content.maxY, f.maxY + max(foldMargins.bottom, gap))
             gridRect = CGRect(x: content.minX, y: content.minY, width: content.width, height: gridBottom - content.minY)
             panel = CGRect(x: content.minX, y: panelTop, width: content.width, height: content.maxY - panelTop)
-        case .book, .flat:
+        case .flat:
+            // Flat 180°: top 25 % = typed text + status, bottom 75 % = keyboard.
+            let h = (content.height * 0.25).rounded()
+            panel = CGRect(x: content.minX, y: content.minY, width: content.width, height: h)
+            let y = content.minY + h + gap
+            gridRect = CGRect(x: content.minX, y: y, width: content.width, height: max(0, content.maxY - y))
+        case .book:
             panel = CGRect(x: content.minX, y: content.minY, width: content.width, height: headerHeight)
             let y = content.minY + headerHeight + gap
             gridRect = CGRect(x: content.minX, y: y, width: content.width, height: max(0, content.maxY - y))

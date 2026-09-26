@@ -6,32 +6,43 @@ struct PanelView: View {
     let arrangement: GridLayout.Arrangement
 
     var body: some View {
-        if arrangement == .laptop {
-            VStack(alignment: .leading, spacing: 10) {
-                readout
-                Spacer(minLength: 0)
-                StatusPill(model: model)
-                    .frame(maxWidth: .infinity)
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                readout
-                StatusPill(model: model)
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            TypedText(model: model)
+            Spacer(minLength: 0)
+            StatusPill(model: model)
+                .frame(maxWidth: .infinity)
         }
     }
+}
 
-    private var readout: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("selected: \(model.selected ?? "–")")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-            Text(model.log.isEmpty ? "log: –" : "log: " + model.log.suffix(12).joined(separator: " · "))
-                .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(Theme.muted)
-                .lineLimit(1)
-                .truncationMode(.head)
+/// The reading area: typed text, large, with a blinking cursor; the zoomed group name; a one-line log.
+struct TypedText: View {
+    let model: GazeModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                let on = Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+                (Text(model.text.isEmpty ? "" : model.text)
+                    + Text("|").foregroundStyle(on ? Theme.glow : .clear))
+                    .font(.system(size: 44, weight: .semibold, design: .rounded))
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                    .minimumScaleFactor(0.6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 10) {
+                if let g = model.level2Group, let cell = GazeModel.cells[safe: g] {
+                    Text("● \(cell.label)")
+                        .font(.headline)
+                        .foregroundStyle(Theme.look)
+                }
+                Text(model.log.isEmpty ? "log: –" : "log: " + model.log.suffix(10).joined(separator: " · "))
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
         }
         .foregroundStyle(Theme.text)
     }

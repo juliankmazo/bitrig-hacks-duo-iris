@@ -6,7 +6,7 @@ struct CalibrationView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            GridView(model: model, layout: layout, calibrationTarget: model.calibratingZone)
+            GridView(model: model, layout: layout, calibrationTarget: model.calibratingZone, isTyping: false)
                 .opacity(model.isCalibrating ? 0.55 : 0.25)
 
             if let t = model.calibrationTarget, let cellSize = layout.cells.first?.size {

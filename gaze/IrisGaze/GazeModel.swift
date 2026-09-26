@@ -203,7 +203,7 @@ final class GazeModel {
             dwellZone = nil
             return
         }
-        guard let z, now >= cooldownUntil, Self.cells[safe: z]?.isSelectable == true else {
+        guard let z, now >= cooldownUntil, isSelectable(z) else {
             dwellZone = nil
             if dwellProgress != 0 { dwellProgress = 0 }
             return
@@ -225,13 +225,57 @@ final class GazeModel {
         }
     }
 
+    // MARK: Typing
+
+    /// Typed text (the reading area).
+    private(set) var text = ""
+    /// Level 2: the letter-group cell that was zoomed into; nil = level 1.
+    private(set) var level2Group: Int?
+    /// Cell the zoom animates from.
+    private(set) var zoomOrigin: Int = 5
+
+    var suggestions: [String] { Keyboard.suggestions(for: text) }
+
+    func isSelectable(_ z: Int) -> Bool {
+        if let g = level2Group { return Keyboard.key(at: z, group: g) != nil }
+        return Self.cells[safe: z]?.isSelectable == true
+    }
+
+    /// Label of what selecting cell `z` does at the current level (for the log / flash).
     func select(_ z: Int) {
-        guard let cell = Self.cells[safe: z], cell.isSelectable else { return }
-        selected = cell.logLabel
-        log.append(cell.logLabel)
+        guard isSelectable(z) else { return }
+        var label: String
+        if let g = level2Group, let key = Keyboard.key(at: z, group: g) {
+            label = key.label
+            withAnimation(.easeOut(duration: 0.25)) {
+                if !key.isBack { text += key.label }
+                level2Group = nil
+            }
+        } else if let cell = Self.cells[safe: z] {
+            label = cell.logLabel
+            switch cell.kind {
+            case .letters:
+                zoomOrigin = z
+                withAnimation(.easeOut(duration: 0.25)) { level2Group = z }
+            case .action:
+                if cell.caption == "SPACE" { text += " " } else if !text.isEmpty { text.removeLast() }
+            case .suggest:
+                let i = [3: 0, 7: 1, 11: 2][z] ?? 0
+                if let word = suggestions[safe: i] {
+                    label = word
+                    text = String(text.dropLast(Keyboard.currentWord(in: text).count)) + word + " "
+                }
+            case .rest:
+                return
+            }
+        } else {
+            return
+        }
+        selected = label
+        log.append(label)
         if log.count > 40 { log.removeFirst(log.count - 40) }
         flashZone = z
-        Self.logger.notice("selected \(cell.logLabel, privacy: .public)")
+        Self.logger.notice("selected \(label, privacy: .public) text=\(self.text, privacy: .public)")
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             if self?.flashZone == z { self?.flashZone = nil }
@@ -241,6 +285,8 @@ final class GazeModel {
     func clearLog() {
         log.removeAll()
         selected = nil
+        text = ""
+        level2Group = nil
     }
 
     static func median(_ rows: [[Double]]) -> [Double]? {
@@ -357,7 +403,6 @@ final class GazeModel {
                 await self.validate(layout: layout)
             }
             self.finishCalibration()
-            self.showDebug = true   // show the fit right away so the error is visible
         }
     }
 

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iris Outer Display</title>
+<style>
+  :root { --bg: #000; --text: #f4f6fa; --muted: #6b7280; --accent: #6ea8ff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.3 -apple-system, "SF Pro Display", Inter, system-ui, sans-serif; overflow: hidden; }
+  #tag { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); font-size: 12px; letter-spacing: .22em;
+    text-transform: uppercase; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+  #tag .dot { width: 8px; height: 8px; border-radius: 50%; background: #3a4356; }
+  #tag .dot.on { background: #9dff9b; box-shadow: 0 0 8px #9dff9b; }
+  #wrap { height: 100%; display: flex; align-items: center; justify-content: center; padding: 8vw; }
+  #caption { font-size: clamp(36px, 7vw, 120px); font-weight: 600; letter-spacing: -.02em; text-align: center; text-wrap: balance;
+    transition: color .3s, opacity .3s; }
+  #caption.interim { color: #9aa6bd; }
+  #caption.interim::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; font-weight: 300; }
+  #caption.empty { color: var(--muted); font-weight: 400; font-size: clamp(22px, 3vw, 40px); }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+  <div id="tag"><span class="dot" id="dot"></span>Outer display · simulated</div>
+  <div id="wrap"><div id="caption" class="empty">Waiting for the patient…</div></div>
+<script>
+  const cap = document.getElementById("caption"), dot = document.getElementById("dot");
+  function connect() {
+    const ws = new WebSocket(`ws://127.0.0.1:${new URLSearchParams(location.search).get("ws") || 8765}`);
+    ws.onopen = () => dot.classList.add("on");
+    ws.onclose = () => { dot.classList.remove("on"); setTimeout(connect, 1000); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type !== "caption") return;
+      const text = (m.text || "").trim();
+      cap.className = text ? (m.final ? "" : "interim") : "empty";
+      cap.textContent = text || "Listening…";
+    };
+  }
+  connect();
+</script>
+</body>
+</html>

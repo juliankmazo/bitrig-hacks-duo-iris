@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iris Tracker</title>
+<style>
+  :root {
+    --bg: #07090f; --panel: #10141d; --line: #1e2533; --text: #e8ecf4; --muted: #7d879c;
+    --accent: #6ea8ff; --accent2: #9dff9b; --warn: #ffb454; --bad: #ff6b6b; --glow: rgba(110,168,255,.55);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, "SF Pro Text", Inter, system-ui, sans-serif; overflow: hidden; user-select: none; }
+  #stage { position: fixed; inset: 0; }
+
+  /* grid */
+  #grid { position: absolute; inset: 0; display: grid; gap: 10px; padding: 10px 10px 76px; }
+  .cell { position: relative; border-radius: 22px; background: var(--panel); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; flex-direction: column;
+    transition: background .18s, border-color .18s, box-shadow .18s, transform .18s; overflow: hidden; }
+  .cell .label { font-size: clamp(28px, 5vw, 68px); font-weight: 700; letter-spacing: .06em; color: #cfd6e4; }
+  .cell .sub { font-size: 13px; color: var(--muted); margin-top: 6px; letter-spacing: .12em; text-transform: uppercase; }
+  .cell .idx { position: absolute; top: 12px; left: 16px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cell.suggest { background: #0d1320; border-style: dashed; }
+  .cell.suggest .label { font-size: clamp(20px, 2.6vw, 34px); font-weight: 500; color: #8fa6c9; }
+  .cell.active { background: #16203a; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset, 0 0 40px -10px var(--glow); }
+  .cell.selected { background: #1a3d2a; border-color: var(--accent2); box-shadow: 0 0 0 3px var(--accent2) inset, 0 0 60px -10px rgba(157,255,155,.6); transform: scale(.985); }
+  .cell.target { background: #2a2140; border-color: #b58cff; box-shadow: 0 0 0 3px #b58cff inset; }
+  .cell.target::after { content: "LOOK HERE"; position: absolute; bottom: 14px; font-size: 12px; letter-spacing: .2em; color: #c9adff; }
+
+  /* dwell ring */
+  #ring { position: absolute; width: 92px; height: 92px; pointer-events: none; opacity: 0; transition: opacity .15s; }
+  #ring circle { fill: none; stroke-width: 6; }
+  #ring .bg { stroke: rgba(255,255,255,.08); }
+  #ring .fg { stroke: var(--accent2); stroke-linecap: round; transform: rotate(-90deg); transform-origin: center; }
+
+  /* cursor */
+  #cursor { position: absolute; left: 0; top: 0; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%;
+    background: radial-gradient(circle, #fff 0%, var(--accent) 45%, transparent 72%);
+    box-shadow: 0 0 24px 6px var(--glow); pointer-events: none; will-change: transform; opacity: 0; transition: opacity .3s; }
+  #cursor::after { content: ""; position: absolute; inset: -14px; border-radius: 50%; border: 2px solid var(--accent); opacity: var(--conf, .5); }
+  #cursor.frozen { filter: grayscale(1); }
+
+  /* HUD */
+  #hud { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center;
+    background: rgba(12,16,24,.85); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; backdrop-filter: blur(10px); z-index: 5; }
+  .pill { display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .pill b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #3a4356; transition: background .15s, box-shadow .15s; }
+  .dot.on { background: var(--accent2); box-shadow: 0 0 10px var(--accent2); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+  .dot.bad { background: var(--bad); }
+  #blinkPill.flash { background: rgba(255,180,84,.18); }
+  #blinkPill.flash .dot { background: var(--warn); box-shadow: 0 0 12px var(--warn); }
+  button { font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: #1a2233; border: 1px solid #2a3449;
+    border-radius: 999px; padding: 7px 14px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: #22304a; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #05101f; }
+  button.primary:hover { background: #8bbaff; }
+  kbd { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 4px; margin-left: 2px; }
+  #confbar { width: 60px; height: 5px; background: #1e2533; border-radius: 3px; overflow: hidden; }
+  #confbar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--bad), var(--warn), var(--accent2)); transition: width .2s; }
+
+  /* overlays */
+  .overlay { position: absolute; inset: 0; background: rgba(4,6,10,.96); display: none; z-index: 10; }
+  .overlay.show { display: block; }
+  #calDot { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+    transition: left .45s cubic-bezier(.4,0,.2,1), top .45s cubic-bezier(.4,0,.2,1); }
+  #calDot .core { position: absolute; inset: 0; border-radius: 50%; background: #fff;
+    box-shadow: 0 0 0 10px rgba(255,255,255,.12), 0 0 40px 8px rgba(110,168,255,.5); transition: transform .25s, background .25s; }
+  #calDot .core::after { content: ""; position: absolute; inset: 11px; border-radius: 50%; background: var(--accent); }
+  #calDot.sampling.hold .core { transform: scale(.55); }
+  #calDot.ok .core { background: var(--accent2); }
+  #calDot svg { position: absolute; left: -25px; top: -25px; width: 84px; height: 84px; pointer-events: none; }
+  #calDot svg circle { fill: none; stroke-width: 5; }
+  #calDot svg .bg { stroke: rgba(255,255,255,.10); }
+  #calDot svg .fg { stroke: var(--accent2); stroke-linecap: round; transform: rotate(-90deg); transform-origin: center;
+    transition: stroke-dashoffset .12s linear; }
+  #calDot.phase-still svg .fg { stroke: var(--accent); }
+  #calDot.phase-move svg .fg { stroke: var(--accent2); }
+  #calDot.settling.sampling svg .fg { stroke: var(--warn); }
+  #calDot .lbl { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); white-space: nowrap;
+    font-size: 15px; font-weight: 600; letter-spacing: .04em; color: var(--accent); }
+  #calDot.phase-move .lbl { color: var(--accent2); }
+  #liveHint { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); font-size: 12px; color: var(--muted);
+    letter-spacing: .04em; pointer-events: none; opacity: 0; transition: opacity .3s; z-index: 4; }
+  #liveHint.show { opacity: .8; }
+  #calHint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 70px); font-size: 44px; color: var(--accent);
+    opacity: 0; transition: opacity .2s; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
+  #calHint.show { opacity: 1; }
+  .calText { position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); color: var(--muted); text-align: center; font-size: 15px; }
+  .calText b { color: var(--text); }
+  #calProgress { position: absolute; top: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
+  #calProgress i { width: 14px; height: 4px; border-radius: 2px; background: #2a3449; }
+  #calProgress i.done { background: var(--accent2); }
+  #calProgress i.cur { background: var(--accent); }
+
+  #welcome.show, #results.show { display: flex; }
+  #welcome { align-items: center; justify-content: center; flex-direction: column; gap: 14px; text-align: center; }
+  #welcome h1 { font-size: 44px; font-weight: 700; letter-spacing: -.02em; }
+  #welcome p { color: var(--muted); max-width: 520px; }
+  #welcome .row { display: flex; gap: 10px; margin-top: 10px; }
+
+  #results { align-items: center; justify-content: center; flex-direction: column; gap: 20px; }
+  #results h2 { font-size: 30px; }
+  #results .score { font-size: 72px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  #resGrid { display: grid; gap: 8px; }
+  #resGrid div { width: 110px; height: 76px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; border: 1px solid var(--line); }
+  #results p { color: var(--muted); }
+
+  #toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: rgba(12,16,24,.9); border: 1px solid var(--line);
+    padding: 8px 16px; border-radius: 999px; color: var(--text); opacity: 0; transition: opacity .25s; z-index: 20; pointer-events: none; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="grid"></div>
+  <svg id="ring" viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="44"/><circle class="fg" cx="50" cy="50" r="44"/></svg>
+  <div id="cursor"></div>
+  <div id="liveHint">small head movements are fine</div>
+
+  <div id="hud">
+    <div class="pill" id="facePill"><span class="dot"></span>face</div>
+    <div class="pill" id="blinkPill"><span class="dot"></span>blink</div>
+    <div class="pill"><span class="dot" id="calDotHud"></span>cal <b id="calPts">0</b></div>
+    <div class="pill"><b id="fps">0</b> fps</div>
+    <div class="pill"><b id="lat">0</b> ms</div>
+    <div class="pill">conf <span id="confbar"><i></i></span></div>
+    <button class="primary" id="btnCal">Calibrate <kbd>space</kbd></button>
+    <button id="btnTest">Test <kbd>T</kbd></button>
+    <button id="btnReset">Reset cal <kbd>R</kbd></button>
+    <button id="btnFull">Fullscreen <kbd>F</kbd></button>
+  </div>
+
+  <div class="overlay" id="welcome">
+    <h1>Iris eye tracker</h1>
+    <p id="welcomeText">Sit centred in front of the webcam. For each dot: first keep your head still and look at the dot with your eyes only, then keep looking at it while you gently turn and nod. Fullscreen first for the best calibration.</p>
+    <div class="row">
+      <button class="primary" id="btnStart">Start calibration <kbd>space</kbd></button>
+      <button id="btnSkip">Skip</button>
+      <button id="btnFull2">Fullscreen</button>
+    </div>
+    <p id="wsState">connecting…</p>
+  </div>
+
+  <div class="overlay" id="cal">
+    <div id="calProgress"></div>
+    <div id="calDot"><div class="core"></div><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="44"/><circle class="fg" cx="50" cy="50" r="44"/></svg><div class="lbl"></div></div>
+    <div id="calHint"></div>
+    <div class="calText" id="calText">Look at the dot</div>
+  </div>
+
+  <div class="overlay" id="results">
+    <h2>Zone test</h2>
+    <div class="score" id="resScore">–</div>
+    <div id="resGrid"></div>
+    <p id="resDetail"></p>
+    <div><button class="primary" id="btnCloseRes">Done <kbd>esc</kbd></button> <button id="btnAgain">Run again</button></div>
+  </div>
+  <div id="toast"></div>
+</div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const WS_URL = `ws://127.0.0.1:${new URLSearchParams(location.search).get("ws") || 8765}`;
+  const DWELL_MS = 1000, COOLDOWN_MS = 800;
+  const KEY_LABELS = { // 4x3 Iris keyboard; 4th column = suggestions
+    0: ["ABCD"], 1: ["EFGH"], 2: ["IJKL"], 3: ["word 1", "suggest"],
+    4: ["MNOP"], 5: ["·", "rest"], 6: ["QRST"], 7: ["word 2", "suggest"],
+    8: ["UVWXYZ"], 9: ["␣", "space"], 10: ["⌫", "delete"], 11: ["word 3", "suggest"],
+  };
+
+  let cols = 4, rows = 3, ws = null, connected = false;
+  let mode = "idle"; // idle | live | cal | test
+  let gaze = { x: .5, y: .5, zone: -1, face: false, conf: 0, blink: false, closed: false };
+  let cells = [];
+  let dwell = { zone: -1, since: 0, cooldownUntil: 0 };
+  let calResolver = null;
+  let test = null;
+  // calibration flow, overridden by the server's config message
+  let calCfg = { frames: 81, settle: 0.4, hold: false, sweep: false, corners: false, sweepFrames: 120, stillFrames: 36, moveFrames: 45 };
+  let calProgressCb = null;
+
+  // ---------- grid ----------
+  function buildGrid() {
+    const g = $("#grid");
+    g.innerHTML = "";
+    g.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    g.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    cells = [];
+    for (let i = 0; i < cols * rows; i++) {
+      const d = document.createElement("div");
+      d.className = "cell";
+      const lab = (cols === 4 && rows === 3) ? KEY_LABELS[i] : [String(i)];
+      if (lab[1] === "suggest") d.classList.add("suggest");
+      d.innerHTML = `<span class="idx">${i}</span><span class="label">${lab[0]}</span>${lab[1] ? `<span class="sub">${lab[1]}</span>` : ""}`;
+      d.addEventListener("click", () => { if (mode === "live") select(i); });
+      g.appendChild(d); cells.push(d);
+    }
+    const rg = $("#resGrid");
+    rg.style.gridTemplateColumns = `repeat(${cols}, 110px)`;
+  }
+  const zoneOf = (x, y) => Math.min(rows - 1, Math.max(0, Math.floor(y * rows))) * cols + Math.min(cols - 1, Math.max(0, Math.floor(x * cols)));
+  const zoneCenter = (z) => ({ x: ((z % cols) + .5) / cols, y: (Math.floor(z / cols) + .5) / rows });
+
+  // ---------- websocket ----------
+  function connect() {
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => { connected = true; $("#wsState").textContent = "tracker connected"; toast("Tracker connected"); };
+    ws.onclose = () => { connected = false; $("#wsState").textContent = "tracker offline — retrying"; setTimeout(connect, 1000); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type === "gaze") onGaze(m);
+      else if (m.type === "config") { if (m.cols !== cols || m.rows !== rows) { cols = m.cols; rows = m.rows; buildGrid(); } setCalPts(m.cal_points); applyCalCfg(m); }
+      else if (m.type === "cal_progress") { if (calProgressCb) calProgressCb(m); }
+      else if (m.type === "status") { $("#fps").textContent = m.fps.toFixed(0); $("#lat").textContent = m.latency_ms.toFixed(0); setCalPts(m.cal_points); }
+      else if (m.type === "cal_done") { if (calResolver) { const r = calResolver; calResolver = null; r(m); } setCalPts(m.points); }
+    };
+  }
+  const send = (o) => { if (connected) ws.send(JSON.stringify(o)); };
+  function applyCalCfg(m) {
+    if (m.cal_frames === undefined) return;
+    calCfg = { frames: m.cal_frames, settle: m.cal_settle, hold: !!m.cal_hold, sweep: !!m.cal_sweep,
+               corners: !!m.cal_corners, sweepFrames: m.sweep_frames || 120,
+               stillFrames: m.cal_still_frames || 0, moveFrames: m.cal_move_frames || 0 };
+    $("#welcomeText").textContent = (calCfg.hold || !calCfg.stillFrames)
+      ? "Sit centred in front of the webcam, keep your head still, and follow the dot with your eyes. Fullscreen first for the best calibration."
+      : "Sit centred in front of the webcam. For each dot: first keep your head still and look at the dot with your eyes only, then keep looking at it while you gently turn and nod. Fullscreen first for the best calibration.";
+  }
+  function setCalPts(n) { $("#calPts").textContent = n; $("#calDotHud").className = "dot " + (n >= cols * rows ? "on" : n > 0 ? "warn" : ""); }
+
+  // ---------- gaze ----------
+  const cursor = $("#cursor"), ring = $("#ring"), ringFg = ring.querySelector(".fg");
+  const CIRC = 2 * Math.PI * 44;
+  ringFg.style.strokeDasharray = CIRC;
+  let blinkTimer = null;
+
+  function onGaze(m) {
+    gaze = m;
+    $("#facePill .dot").className = "dot " + (m.face ? "on" : "bad");
+    cursor.style.opacity = (m.face && m.zone >= 0) ? 1 : 0;
+    cursor.classList.toggle("frozen", !!m.closed);
+    cursor.style.setProperty("--conf", (0.25 + 0.75 * m.conf).toFixed(2));
+    $("#confbar i").style.width = (m.conf * 100).toFixed(0) + "%";
+    const W = innerWidth, H = innerHeight;
+    cursor.style.transform = `translate(${(m.x * W).toFixed(1)}px, ${(m.y * H).toFixed(1)}px)`;
+    if (m.blink) {
+      $("#blinkPill").classList.add("flash");
+      clearTimeout(blinkTimer); blinkTimer = setTimeout(() => $("#blinkPill").classList.remove("flash"), 500);
+      if (mode === "live" && m.zone >= 0) select(m.zone, "blink");
+    }
+    $("#liveHint").classList.toggle("show", mode === "live" && !!m.face && m.zone >= 0);
+    if (mode === "live") updateDwell(m);
+    if (mode === "test" && test) test.sample(m);
+    highlight(m.zone);
+  }
+  let lastActive = -1;
+  function highlight(z) {
+    if (z === lastActive) return;
+    if (lastActive >= 0) cells[lastActive]?.classList.remove("active");
+    if (z >= 0) cells[z]?.classList.add("active");
+    lastActive = z;
+  }
+  function updateDwell(m) {
+    const now = performance.now();
+    if (!m.face || m.zone < 0 || m.closed) { dwell.zone = -1; ring.style.opacity = 0; return; }
+    if (m.zone !== dwell.zone) { dwell.zone = m.zone; dwell.since = now; }
+    if (now < dwell.cooldownUntil) { ring.style.opacity = 0; return; }
+    const p = Math.min(1, (now - dwell.since) / DWELL_MS);
+    const c = zoneCenter(m.zone);
+    ring.style.left = (c.x * innerWidth - 46) + "px"; ring.style.top = (c.y * innerHeight - 46) + "px";
+    ring.style.opacity = 1;
+    ringFg.style.strokeDashoffset = CIRC * (1 - p);
+    if (p >= 1) { select(m.zone, "dwell"); dwell.since = now; }
+  }
+  function select(z, how = "tap") {
+    const now = performance.now();
+    dwell.cooldownUntil = now + COOLDOWN_MS;
+    ring.style.opacity = 0;
+    const el = cells[z]; if (!el) return;
+    el.classList.add("selected");
+    setTimeout(() => el.classList.remove("selected"), 450);
+    toast(`Selected ${z} (${how})`);
+  }
+
+  // ---------- calibration ----------
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  function calTargets() {
+    const t = [];
+    for (let z = 0; z < cols * rows; z++) t.push(zoneCenter(z));
+    // extra points near the corners so the regression has to extrapolate less (--cal-hold / --cal-corners)
+    if (calCfg.corners) t.push({ x: .04, y: .06 }, { x: .96, y: .06 }, { x: .04, y: .94 }, { x: .96, y: .94 });
+    return t;
+  }
+  const calDotEl = $("#calDot"), calFg = calDotEl.querySelector(".fg");
+  calFg.style.strokeDasharray = CIRC;
+  function setCalRing(frac) { calFg.style.strokeDashoffset = CIRC * (1 - Math.max(0, Math.min(1, frac))); }
+  const SWEEP_HINTS = ["← turn left", "turn right →", "↑ look up (nod)", "↓ nod down"];
+
+  // one capture: resolves with the cal_done message, or null on timeout
+  function capture(msg, frames, onProgress) {
+    return new Promise((resolve) => {
+      const done = (m) => { calProgressCb = null; resolve(m); };
+      calResolver = done;
+      calProgressCb = (p) => { calDotEl.classList.toggle("settling", !!p.settling); setCalRing(p.count / p.n); if (onProgress) onProgress(p.count / p.n, p); };
+      send(msg);
+      const ms = (calCfg.settle + frames / 30 * 2 + 4) * 1000;
+      setTimeout(() => { if (calResolver === done) { calResolver = null; done(null); } }, ms);
+    });
+  }
+
+  async function runCalibration() {
+    if (!connected) { toast("Tracker not connected"); return; }
+    mode = "cal"; show("#cal");
+    send({ type: "cal_reset" }); await sleep(150); calResolver = null;
+    const targets = calTargets(), dot = calDotEl, prog = $("#calProgress"), hint = $("#calHint");
+    const steps = targets.length + (calCfg.sweep ? 1 : 0);
+    const twoPhase = !calCfg.hold && calCfg.stillFrames > 0;
+    const holdTxt = "Look at the dot";
+    const stillTxt = "<b>Keep your head still</b> (facing the middle) and look at the dot with your eyes";
+    const moveTxt = "Now <b>gently turn and nod</b> while looking at the dot";
+    const lbl = dot.querySelector(".lbl");
+    const setPhase = (ph, count) => {
+      dot.classList.toggle("phase-still", ph === "still"); dot.classList.toggle("phase-move", ph === "move");
+      lbl.textContent = ph === "still" ? "head still" : ph === "move" ? "↔ turn · ↕ nod" : "";
+      const txt = ph === "move" ? moveTxt : twoPhase ? stillTxt : holdTxt;
+      $("#calText").innerHTML = `${txt} &nbsp;·&nbsp; <b>${count}</b>`;
+    };
+    dot.classList.toggle("hold", calCfg.hold);
+    prog.innerHTML = Array.from({ length: steps }, () => "<i></i>").join("");
+    let last = null;
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i];
+      prog.children[i].className = "cur";
+      dot.classList.remove("ok", "sampling"); setCalRing(0);
+      dot.style.left = (t.x * 100) + "%"; dot.style.top = (t.y * 100) + "%";
+      const count = `${i + 1} / ${steps}`;
+      setPhase(twoPhase ? "still" : "point", count);
+      // hold: wait for the eyes to land; two-phase: the server discards the first `settle` s itself
+      await sleep(calCfg.hold ? 700 : 150);
+      let res = null;
+      for (let attempt = 0; attempt < 2 && !res; attempt++) {
+        dot.classList.add("sampling");
+        setPhase(twoPhase ? "still" : "point", count);
+        let shown = twoPhase ? "still" : "point";
+        res = await capture({ type: "cal", x: t.x, y: t.y }, calCfg.frames, (f, p) => {
+          if (p.phase && p.phase !== shown && p.phase !== "point") { shown = p.phase; setPhase(p.phase, count); }
+        });
+        if (!res || res.count < Math.min(8, calCfg.frames / 3)) {
+          $("#calText").innerHTML = `<b>No face / eyes closed</b> — retrying`; dot.classList.remove("sampling"); res = null; setCalRing(0); await sleep(600);
+        }
+        if (mode !== "cal") return;
+      }
+      last = res || last;
+      dot.classList.add("ok"); prog.children[i].className = "done";
+      await sleep(100);
+      if (mode !== "cal") return;
+    }
+    setPhase("point", ""); dot.classList.remove("phase-still", "phase-move");
+    if (calCfg.sweep) {
+      const i = targets.length;
+      prog.children[i].className = "cur";
+      dot.classList.remove("ok", "sampling"); setCalRing(0);
+      dot.style.left = "50%"; dot.style.top = "50%";
+      $("#calText").innerHTML = `Last step: <b>keep your eyes on the dot</b> and slowly turn your head left, right, up, down &nbsp;·&nbsp; <b>${i + 1} / ${steps}</b>`;
+      hint.textContent = "keep looking at the dot"; hint.classList.add("show");
+      await sleep(1200);
+      if (mode !== "cal") { hint.classList.remove("show"); return; }
+      dot.classList.add("sampling");
+      const res = await capture({ type: "cal", x: .5, y: .5, stage: "sweep" }, calCfg.sweepFrames,
+        (f) => { hint.textContent = SWEEP_HINTS[Math.min(3, Math.floor(f * 4))]; });
+      hint.classList.remove("show");
+      last = res || last;
+      dot.classList.add("ok"); prog.children[i].className = "done";
+      await sleep(150);
+      if (mode !== "cal") return;
+    }
+    hide("#cal"); mode = "live";
+    const acc = last && last.lopo_acc != null ? ` · held-out ${(last.lopo_acc * 100).toFixed(0)}%` : "";
+    toast(`Calibrated — live${last && last.model ? " · " + last.model : ""}${acc}`);
+  }
+
+  // ---------- test ----------
+  function makeTest() {
+    const n = cols * rows, order = [...Array(n).keys()];
+    for (let i = n - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    const HOLD = 2000, WINDOW = 1500;
+    const perZone = new Array(n).fill(null), t = { order, i: -1, hits: 0, total: 0, since: 0, zone: -1 };
+    t.sample = (m) => {
+      if (t.zone < 0) return;
+      if (performance.now() - t.since < HOLD - WINDOW) return;
+      t.total++; if (m.zone === t.zone) t.hits++;
+    };
+    t.run = async () => {
+      mode = "test"; hide("#welcome"); hide("#results"); ring.style.opacity = 0;
+      toast("Zone test: look at the purple cell");
+      for (const z of order) {
+        t.zone = z; t.hits = 0; t.total = 0; t.since = performance.now();
+        send({ type: "test_zone", zone: z, i: order.indexOf(z), n, hold_s: HOLD / 1000, window_s: WINDOW / 1000 });
+        cells[z].classList.add("target");
+        await sleep(HOLD);
+        cells[z].classList.remove("target");
+        perZone[z] = t.total ? t.hits / t.total : 0;
+        if (mode !== "test") { send({ type: "test_zone", zone: -1 }); return; }
+      }
+      t.zone = -1;
+      send({ type: "test_zone", zone: -1 });
+      const overall = perZone.reduce((a, b) => a + b, 0) / n;
+      showResults(perZone, overall);
+      send({ type: "test_result", overall: +overall.toFixed(4), per_zone: perZone.map(v => +v.toFixed(3)),
+             hold_s: HOLD / 1000, window_s: WINDOW / 1000, order, cols, rows, screen: [innerWidth, innerHeight] });
+      mode = "live";
+    };
+    return t;
+  }
+  function showResults(perZone, overall) {
+    const rg = $("#resGrid"); rg.innerHTML = "";
+    perZone.forEach((v, i) => {
+      const d = document.createElement("div");
+      const hue = 120 * v;
+      d.style.background = `hsl(${hue} 55% 22%)`; d.style.borderColor = `hsl(${hue} 60% 40%)`;
+      d.textContent = (v * 100).toFixed(0) + "%"; d.title = "zone " + i; rg.appendChild(d);
+    });
+    $("#resScore").textContent = (overall * 100).toFixed(0) + "%";
+    $("#resDetail").textContent = `${perZone.length} zones · 2 s each · scored on the last 1.5 s · logged to tracker/test_results.jsonl (+ frames in test_samples.jsonl)`;
+    show("#results");
+  }
+
+  // ---------- ui plumbing ----------
+  const show = (s) => $(s).classList.add("show"), hide = (s) => $(s).classList.remove("show");
+  let toastTimer;
+  function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 1400); }
+  function fullscreen() { (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {}); }
+  function startCal() { hide("#welcome"); hide("#results"); runCalibration(); }
+  function startTest() { if (mode === "cal") return; hide("#results"); test = makeTest(); test.run(); }
+  function resetCal() { send({ type: "cal_reset" }); toast("Calibration reset"); }
+
+  $("#btnStart").onclick = startCal; $("#btnCal").onclick = startCal;
+  $("#btnSkip").onclick = () => { hide("#welcome"); mode = "live"; };
+  $("#btnTest").onclick = startTest; $("#btnAgain").onclick = startTest;
+  $("#btnReset").onclick = resetCal;
+  $("#btnFull").onclick = fullscreen; $("#btnFull2").onclick = fullscreen;
+  $("#btnCloseRes").onclick = () => { hide("#results"); mode = "live"; };
+  addEventListener("keydown", (e) => {
+    if (e.code === "Space") { e.preventDefault(); if (mode !== "cal") startCal(); }
+    else if (e.key === "t" || e.key === "T") startTest();
+    else if (e.key === "r" || e.key === "R") resetCal();
+    else if (e.key === "f" || e.key === "F") fullscreen();
+    else if (e.key === "Escape") { if (mode === "cal" || mode === "test") { hide("#cal"); hide("#results"); mode = "live"; toast("Cancelled"); } else { hide("#results"); hide("#welcome"); mode = "live"; } }
+  });
+
+  buildGrid(); show("#welcome"); connect();
+})();
+</script>
+</body>
+</html>

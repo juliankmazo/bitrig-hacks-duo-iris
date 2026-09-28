@@ -1,0 +1,10 @@
+# Heavy or regenerable media (see README: tools/ rebuilds them)
+source/
+assets/clips/
+assets/music/
+# HyperFrames working files
+node_modules/
+snapshots/
+.thumbnails/
+renders/.hf-segments/
+.DS_Store

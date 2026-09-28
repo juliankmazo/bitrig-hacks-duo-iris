@@ -4,6 +4,23 @@ struct RootView: View {
     let model: GazeModel
 
     var body: some View {
+        if #available(iOS 27.1, *) {
+            content
+                .sceneAccessory {
+                    CameraCaptureAccessory {
+                        IdleView(model: model, followsDeviceOrientation: true)
+                            .preferredColorScheme(.dark)
+                    }
+                    .onAvailabilityChange { available in
+                        model.setAudienceDisplayAvailable(available)
+                    }
+                }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         GeometryReader { proxy in
             // Read reserved regions on EVERY layout pass: they are empty on the first one.
             let layout = GridLayout.make(
@@ -21,7 +38,7 @@ struct RootView: View {
                 } else {
                     switch model.screen {
                     case .idle:
-                        IdleView()
+                        IdleView(model: model)
                     case .calibration:
                         CalibrationView(model: model, layout: layout)
                     case .grid:

@@ -60,6 +60,11 @@ struct TypedText: View {
                         .font(.headline)
                         .foregroundStyle(Theme.look)
                 }
+                if model.isEyeTrackingPaused {
+                    Text("Eye tracking paused")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.look)
+                }
             }
             Button {
                 model.speak()
@@ -73,6 +78,7 @@ struct TypedText: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Speak text")
+            EyeTrackingPauseControl(model: model)
         }
         .foregroundStyle(Theme.text)
         .padding(.vertical, 8)
@@ -112,6 +118,8 @@ struct StatusPill: View {
                 }
                 Text("\(model.fps) fps")
                 Text(model.hingeText)
+                    .foregroundStyle(Theme.muted)
+                Text(model.audienceDisplayAvailable ? "outer ready" : "outer off")
                     .foregroundStyle(Theme.muted)
             }
             .font(.caption.monospacedDigit())

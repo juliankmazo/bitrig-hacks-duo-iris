@@ -16,6 +16,11 @@ struct CalibrationView: View {
                     .position(x: layout.size.width / 2, y: max(layout.panel.midY, 60))
             }
 
+            if model.demo, model.isCalibrating {
+                EyeTrackingPauseControl(model: model)
+                    .position(x: layout.size.width - 75, y: max(layout.panel.midY, 60))
+            }
+
             if let t = model.calibrationTarget, let cellSize = layout.cells.first?.size {
                 let p = CGPoint(x: t.x * layout.size.width, y: t.y * layout.size.height)
                 CalibrationTarget(phase: model.calibrationPhase, progress: model.calibrationProgress, cellSize: cellSize)
@@ -48,7 +53,7 @@ struct CalibrationView: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 18)
                         .padding(.vertical, 10)
-                        .background(Color.red.opacity(0.75), in: .capsule)
+                        .background(model.isEyeTrackingPaused ? Theme.action.opacity(0.9) : Color.red.opacity(0.75), in: .capsule)
                         .position(x: area.midX, y: area.maxY - 24)
                 }
             }

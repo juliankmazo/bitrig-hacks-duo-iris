@@ -38,6 +38,8 @@ final class GazeModel {
     let mac = MacGazeSource()
     let device = DeviceGazeSource()
     private(set) var backend: Backend = .sim
+    private(set) var isEyeTrackingPaused = UserDefaults.standard.bool(forKey: "eyeTrackingPaused")
+    private(set) var audienceDisplayAvailable = false
     var source: any GazeSource {
         switch backend {
         case .sim: simulated
@@ -164,6 +166,21 @@ final class GazeModel {
         setBackend(order[(i + 1) % order.count])
     }
 
+    func setEyeTrackingPaused(_ paused: Bool) {
+        guard isEyeTrackingPaused != paused else { return }
+        isEyeTrackingPaused = paused
+        UserDefaults.standard.set(paused, forKey: "eyeTrackingPaused")
+        zone = nil
+        dwellZone = nil
+        dwellProgress = 0
+        recentFeatures.removeAll()
+        if isCalibrating { calibrationMessage = paused ? "Eye tracking paused" : nil }
+    }
+
+    func setAudienceDisplayAvailable(_ available: Bool) {
+        audienceDisplayAvailable = available
+    }
+
     // MARK: Hinge
 
     func apply(hinge: DeviceHinge?) {
@@ -201,7 +218,7 @@ final class GazeModel {
         if s != lastSample {
             sampleCount += 1
             lastSample = s
-            if !s.blink, let f = s.featureVector {
+            if !isEyeTrackingPaused, !s.blink, let f = s.featureVector {
                 recentFeatures.append(f)
                 if recentFeatures.count > 15 { recentFeatures.removeFirst() }
             }
@@ -210,6 +227,13 @@ final class GazeModel {
             fps = sampleCount
             sampleCount = 0
             fpsWindowStart = now
+        }
+
+        guard !isEyeTrackingPaused else {
+            zone = nil
+            dwellZone = nil
+            dwellProgress = 0
+            return
         }
 
         let z = calibrator.process(s, layout: layout)
@@ -450,6 +474,7 @@ final class GazeModel {
         calibrationStep = 0
         level2Group = nil
         isCalibrating = true
+        calibrationMessage = isEyeTrackingPaused ? "Eye tracking paused" : nil
         showDebug = false
         validationAccuracy = nil
         validationPerCell = [:]
@@ -619,8 +644,17 @@ final class GazeModel {
     private func pump(seconds: TimeInterval, phase: String, cell: Int, pass: Int,
                       handle: (GazeSample) -> Void) async {
         var last: GazeSample?
-        let start = Date.now
-        while Date.now.timeIntervalSince(start) < seconds, !Task.isCancelled {
+        var elapsed: TimeInterval = 0
+        var previous = Date.now
+        while elapsed < seconds, !Task.isCancelled {
+            let now = Date.now
+            if isEyeTrackingPaused {
+                previous = now
+                try? await Task.sleep(for: .milliseconds(12))
+                continue
+            }
+            elapsed += now.timeIntervalSince(previous)
+            previous = now
             let s = source.sample
             if s != last {
                 last = s
@@ -631,7 +665,7 @@ final class GazeModel {
                 recorder?.write(rec)
                 handle(s)
             }
-            calibrationProgress = Date.now.timeIntervalSince(start) / seconds
+            calibrationProgress = min(1, elapsed / seconds)
             try? await Task.sleep(for: .milliseconds(12))
         }
     }

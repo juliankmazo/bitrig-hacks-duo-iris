@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1920, height=1080" />
+<title>Iris · Look</title>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+@font-face { font-family: "Inter"; src: url("assets/fonts/inter.woff2") format("woff2"); font-weight: 100 900; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+#root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #000;
+  font-family: "Inter", sans-serif; color: #f5f5f7; -webkit-font-smoothing: antialiased; }
+.clip { position: absolute; inset: 0; }
+.fade, .kb { position: absolute; inset: 0; }
+.fade { opacity: 0; }
+.kb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shade { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(0,0,0,0) 40%, rgba(0,0,0,.55) 100%); }
+.shade-b { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0) 55%, rgba(0,0,0,.7) 100%); }
+.sub { display: flex; align-items: flex-end; justify-content: center; padding-bottom: 64px; pointer-events: none; z-index: 60; }
+.sub span { display: block; max-width: 1300px; text-align: center; font-size: 34px; font-weight: 500; line-height: 1.3;
+  letter-spacing: -0.01em; color: rgba(255,255,255,.95); text-shadow: 0 1px 10px rgba(0,0,0,.5); opacity: 0;
+  background: rgba(0,0,0,.42); padding: 8px 22px; border-radius: 14px; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.title { display: flex; align-items: center; justify-content: center; z-index: 40; }
+.title .t { display: block; opacity: 0; text-align: center; font-weight: 600; letter-spacing: -0.045em; line-height: 1.02; }
+.grad { background: linear-gradient(180deg, #ffffff 0%, #c9cff9 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.eyebrow { font-size: 26px; font-weight: 500; letter-spacing: 0.01em; color: #a1a1a6; }
+.layer { position: absolute; opacity: 0; }
+.device { border-radius: 64px; padding: 14px; background: linear-gradient(145deg, #3a3a3e 0%, #121214 45%, #2b2b2f 100%);
+  box-shadow: 0 0 0 1.5px #4a4a50 inset, 0 40px 120px rgba(0,0,0,.6), 0 0 160px rgba(120,130,255,.10); }
+.screen { position: relative; width: 100%; height: 100%; border-radius: 50px; overflow: hidden; background: #fff; }
+.screen video { position: absolute; top: -0.6%; left: -0.6%; width: 101.2%; height: 101.2%; object-fit: cover; }
+.cam { border-radius: 26px; overflow: hidden; background: #111; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+.cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cam-label { position: absolute; left: 18px; bottom: 16px; display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 500;
+  color: #fff; background: rgba(0,0,0,.45); padding: 7px 14px; border-radius: 999px; z-index: 2; }
+.cam-label i { display: block; width: 10px; height: 10px; border-radius: 50%; background: #ff453a; }
+.grain { position: absolute; inset: -50%; z-index: 90; pointer-events: none; opacity: .07; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="look" data-start="0" data-duration="78.0" data-width="1920" data-height="1080">
+<div id="still1" class="clip" data-start="0" data-duration="6.2" data-track-index="1" style="z-index:1"><div class="fade"><div class="kb"><img src="assets/img/s_problem.png" alt="" style="object-position:center"></div><div class="shade"></div></div></div>
+<audio id="vo-a1" src="assets/vo/a1.mp3" data-start="0.80" data-duration="4.12" data-track-index="8" data-volume="1.25"></audio>
+<div id="sub2" class="clip sub" data-start="0.85" data-duration="4.47" data-track-index="5"><span>Most people living with ALS will lose the ability to speak.</span></div>
+<div id="still3" class="clip" data-start="5.4" data-duration="7.6" data-track-index="1" style="z-index:2"><div class="fade"><div class="kb"><img src="assets/img/hands.png" alt="" style="object-position:center"></div><div class="shade"></div></div></div>
+<audio id="vo-a2" src="assets/vo/a2.mp3" data-start="5.90" data-duration="5.87" data-track-index="8" data-volume="1.25"></audio>
+<div id="sub4" class="clip sub" data-start="5.95" data-duration="6.22" data-track-index="5"><span>The devices that give that voice back can cost fifteen thousand dollars.</span></div>
+<div id="title5" class="clip title" data-start="9.55" data-duration="3.10" data-track-index="4" style="z-index:41"><div class="t" style="font-size:200px;"><span class="grad">$15,000</span><div style="margin-top:26px;font-size:34px;font-weight:500;letter-spacing:-0.01em;color:#e5e5ea">for an eye-gaze communication device</div></div></div>
+<div id="openA" class="layer" style="left:431px;top:0;width:1058px;height:1080px;z-index:34"><div class="push" style="position:absolute;inset:0"><video style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain" id="v6" src="assets/clips/opening.mp4" data-start="12.400" data-duration="9.200" data-media-start="10.300" data-playback-rate="1.0" data-track-index="2" muted playsinline></video></div></div>
+<audio id="vo-a3" src="assets/vo/a3.mp3" data-start="12.90" data-duration="2.48" data-track-index="8" data-volume="1.25"></audio>
+<div id="sub7" class="clip sub" data-start="12.95" data-duration="2.83" data-track-index="5"><span>We thought it should only take a phone.</span></div>
+<audio id="vo-a4" src="assets/vo/a4.mp3" data-start="17.00" data-duration="1.61" data-track-index="8" data-volume="1.25"></audio>
+<div id="sub8" class="clip sub" data-start="17.05" data-duration="1.96" data-track-index="5"><span>This is Iris.</span></div>
+<div id="still9" class="clip" data-start="20.6" data-duration="3.6" data-track-index="1" style="z-index:35"><div class="fade"><div class="kb"><img src="assets/img/s_inner2.png" alt="" style="object-position:center"></div><div class="shade"></div></div></div>
+<div id="still10" class="clip" data-start="23.8" data-duration="3.6" data-track-index="1" style="z-index:36"><div class="fade"><div class="kb"><img src="assets/img/s_wide.png" alt="" style="object-position:center"></div><div class="shade"></div></div></div>
+<audio id="vo-a5" src="assets/vo/a5.mp3" data-start="21.10" data-duration="4.82" data-track-index="8" data-volume="1.25"></audio>
+<div id="sub11" class="clip sub" data-start="21.15" data-duration="5.17" data-track-index="5"><span>Iris turns iPhone Duo into a voice you control with your eyes.</span></div>
+<div id="unfoldA" class="layer" style="left:431px;top:0;width:1058px;height:1080px;z-index:37"><div class="push" style="position:absolute;inset:0"><video style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain" id="v12" src="assets/clips/opening.mp4" data-start="27.200" data-duration="3.200" data-media-start="18.600" data-playback-rate="1.0" data-track-index="2" muted playsinline></video></div></div>
+<audio id="vo-a6" src="assets/vo/a6.mp3" data-start="27.50" data-duration="2.04" data-track-index="8" data-volume="1.25"></audio>
+<div id="devA" class="layer device" style="left:250px;top:84px;width:640px;height:912px;border-radius:64px;padding:14px"><div class="screen"><video id="v13" src="assets/clips/screen.mp4" data-start="29.500" data-duration="7.200" data-media-start="8.000" data-playback-rate="10" data-track-index="2" muted playsinline></video><video id="v15" src="assets/clips/screen.mp4" data-start="36.700" data-duration="4.000" data-media-start="94.000" data-playback-rate="1.5" data-track-index="2" muted playsinline></video><video id="v16" src="assets/clips/screen.mp4" data-start="40.700" data-duration="4.000" data-media-start="101.200" data-playback-rate="1.25" data-track-index="2" muted playsinline></video><video id="v17" src="assets/clips/screen.mp4" data-start="44.700" data-duration="5.000" data-media-start="107.500" data-playback-rate="1.3" data-track-index="2" muted playsinline></video><video id="v18" src="assets/clips/screen.mp4" data-start="49.700" data-duration="7.000" data-media-start="116.500" data-playback-rate="1.0" data-track-index="2" muted playsinline></video></div></div>
+<div id="camA" class="layer cam" style="left:1120px;top:640px;width:560px;height:314px"><video id="v14" src="assets/clips/face.mp4" data-start="29.500" data-duration="7.200" data-media-start="8.000" data-playback-rate="10" data-track-index="2" muted playsinline></video><video id="v19" src="assets/clips/face.mp4" data-start="36.700" data-duration="4.000" data-media-start="94.000" data-playback-rate="1.5" data-track-index="2" muted playsinline></video><video id="v20" src="assets/clips/face.mp4" data-start="40.700" data-duration="4.000" data-media-start="101.200" data-playback-rate="1.25" data-track-index="2" muted playsinline></video><video id="v21" src="assets/clips/face.mp4" data-start="44.700" data-duration="5.000" data-media-start="107.500" data-playback-rate="1.3" data-track-index="2" muted playsinline></video><video id="v22" src="assets/clips/face.mp4" data-start="49.700" data-duration="7.000" data-media-start="116.500" data-playback-rate="1.0" data-track-index="2" muted playsinline></video><div class="cam-label"><i></i>Eye tracking · live</div></div>
+<div id="headA0" class="layer" style="left:1120px;top:170px;width:780px;z-index:51"><div class="eyebrow" style="margin-bottom:14px">16-point gaze calibration</div><div style="font-size:60px;font-weight:600;letter-spacing:-0.04em;line-height:1.05;white-space:nowrap">It learns where you look.</div></div>
+<div id="headA1" class="layer" style="left:1120px;top:170px;width:780px;z-index:51"><div class="eyebrow" style="margin-bottom:14px">Dwell on a key to select it</div><div style="font-size:60px;font-weight:600;letter-spacing:-0.04em;line-height:1.05;white-space:nowrap">Hold your gaze to type.</div></div>
+<div id="headA2" class="layer" style="left:1120px;top:170px;width:780px;z-index:51"><div class="eyebrow" style="margin-bottom:14px">Word suggestions from a few glances</div><div style="font-size:60px;font-weight:600;letter-spacing:-0.04em;line-height:1.05;white-space:nowrap">It predicts what you mean.</div></div>
+<audio id="vo-a7" src="assets/vo/a7.mp3" data-start="37.00" data-duration="3.35" data-track-index="8" data-volume="1.25"></audio>
+<audio id="vo-a8" src="assets/vo/a8.mp3" data-start="42.20" data-duration="5.00" data-track-index="8" data-volume="1.25"></audio>
+<div id="echoA" class="layer" style="left:1120px;top:410px;width:760px;z-index:51;opacity:1;font-size:112px;font-weight:600;letter-spacing:-0.05em;white-space:nowrap"><span id="w0" class="grad" style="display:inline-block;opacity:0">I</span> <span id="w1" class="grad" style="display:inline-block;opacity:0">love</span> <span id="w2" class="grad" style="display:inline-block;opacity:0">you</span></div>
+<div id="title23" class="clip title" data-start="56.00" data-duration="2.20" data-track-index="4" style="z-index:55"><div class="t" style="font-size:170px;"><span class="grad">I love you.</span></div></div>
+<audio id="vo-app_love" src="assets/vo/app_love.mp3" data-start="56.50" data-duration="1.11" data-track-index="8" data-volume="1.4"></audio>
+<div id="rotA" class="layer" style="left:431px;top:0;width:1058px;height:1080px;z-index:56"><div class="push" style="position:absolute;inset:0"><video style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain" id="v24" src="assets/clips/rotation.mp4" data-start="58.000" data-duration="5.800" data-media-start="2.200" data-playback-rate="2.0" data-track-index="2" muted playsinline></video></div></div>
+<div id="rotCap1" class="layer" style="left:96px;top:440px;width:520px;font-size:46px;font-weight:600;letter-spacing:-0.04em;line-height:1.1;z-index:57"><span class="grad">Inside, you write it.</span></div>
+<div id="rotCap2" class="layer" style="left:96px;top:506px;width:520px;font-size:46px;font-weight:600;letter-spacing:-0.04em;line-height:1.1;color:#86868b;z-index:57">Outside, they read it.</div>
+<div id="still25" class="clip" data-start="63.0" data-duration="3.2" data-track-index="1" style="z-index:58"><div class="fade"><div class="kb"><img src="assets/img/s_outer.png" alt="" style="object-position:center"></div><div class="shade"></div></div></div>
+<div id="cheerA" class="layer cam" style="left:320px;top:181px;width:1280px;height:718px"><video id="v26" src="assets/clips/face.mp4" data-start="66.000" data-duration="3.800" data-media-start="122.100" data-playback-rate="1.0" data-track-index="2" muted playsinline></video></div>
+<div id="cheerCap" class="layer" style="left:0;right:0;top:930px;text-align:center;font-size:30px;font-weight:500;color:#a1a1a6;z-index:61">Typed with eyes only, on the first try.</div>
+<div id="endRing" class="layer" style="left:835px;top:200px;width:250px;height:250px;z-index:62"><img src="assets/img/glass_iris.png" style="width:375px;height:250px;object-fit:cover;margin-left:-62px;display:block;border-radius:50%"></div>
+<div id="endWord" class="layer" style="left:0;right:0;top:470px;text-align:center;font-size:132px;font-weight:600;letter-spacing:-0.05em;z-index:62"><span class="grad">Iris</span></div>
+<div id="endTag" class="layer" style="left:0;right:0;top:640px;text-align:center;font-size:44px;font-weight:500;letter-spacing:-0.02em;color:#d2d2d7;z-index:62">Speak with your eyes.</div>
+<div id="endTag2" class="layer" style="left:0;right:0;top:708px;text-align:center;font-size:44px;font-weight:500;letter-spacing:-0.02em;color:#86868b;z-index:62">Say what matters.</div>
+<div id="endFoot" class="layer" style="left:0;right:0;top:960px;text-align:center;font-size:24px;font-weight:500;color:#6e6e73;z-index:62">Eye-typing for ALS on iPhone Duo  ·  Built in 4 hours at Bitrig Hacks</div>
+<audio id="vo-a10" src="assets/vo/a10.mp3" data-start="69.80" data-duration="5.87" data-track-index="8" data-volume="1.25"></audio>
+<div id="black27" class="clip" data-start="12.20" data-duration="65.80" data-track-index="3" style="z-index:30"><div class="fade" style="background:#000"></div></div>
+<audio id="musicA" src="assets/music/bed_a.wav" data-start="0" data-duration="78.0" data-track-index="9" data-volume="1" data-automation='{"version": 1, "lanes": [{"target": "volume", "points": [{"t": 0, "v": 0.28}, {"t": 50.2, "v": 0.28}, {"t": 51.2, "v": 0.5}, {"t": 56.3, "v": 0.5}, {"t": 56.5, "v": 0.2}, {"t": 57.8, "v": 0.2}, {"t": 58.3, "v": 0.5}, {"t": 69.89999999999999, "v": 0.34}, {"t": 78.0, "v": 0.34}]}]}' data-fade-out="3"></audio>
+<div class="grain"></div>
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+tl.fromTo("#still1 .fade",{opacity:0},{opacity:1,duration:1.6,ease:"power1.inOut"},0);
+tl.fromTo("#still1 .kb",{scale:1.02,xPercent:0},{scale:1.1,xPercent:0,duration:6.2,ease:"none"},0);
+tl.fromTo("#sub2 span",{opacity:0,y:8},{opacity:1,y:0,duration:.35,ease:"power2.out"},0.85);
+tl.to("#sub2 span",{opacity:0,duration:.3},5.02);
+tl.fromTo("#still3 .fade",{opacity:0},{opacity:1,duration:1.0,ease:"power1.inOut"},5.4);
+tl.fromTo("#still3 .kb",{scale:1.08,xPercent:0},{scale:1.0,xPercent:-2,duration:7.6,ease:"none"},5.4);
+tl.fromTo("#sub4 span",{opacity:0,y:8},{opacity:1,y:0,duration:.35,ease:"power2.out"},5.95);
+tl.to("#sub4 span",{opacity:0,duration:.3},11.87);
+tl.fromTo("#title5 .t",{opacity:0,y:24,filter:"blur(12px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.1,ease:"power3.out"},9.60);
+tl.to("#title5 .t",{opacity:0,duration:.5,ease:"power2.in"},12.15);
+tl.fromTo("#openA",{opacity:0,y:0},{opacity:1,y:0,duration:0.7,ease:"power3.out"},12.40);
+tl.to("#openA",{opacity:0,duration:.6,ease:"power2.in"},20.80);
+tl.fromTo("#openA .push",{scale:0.96},{scale:1.05,duration:8.4,ease:"none"},12.4);
+tl.fromTo("#sub7 span",{opacity:0,y:8},{opacity:1,y:0,duration:.35,ease:"power2.out"},12.95);
+tl.to("#sub7 span",{opacity:0,duration:.3},15.48);
+tl.fromTo("#sub8 span",{opacity:0,y:8},{opacity:1,y:0,duration:.35,ease:"power2.out"},17.05);
+tl.to("#sub8 span",{opacity:0,duration:.3},18.71);
+tl.fromTo("#still9 .fade",{opacity:0},{opacity:1,duration:0.8,ease:"power1.inOut"},20.6);
+tl.fromTo("#still9 .kb",{scale:1.04,xPercent:0},{scale:1.12,xPercent:-1.5,duration:3.6,ease:"none"},20.6);
+tl.fromTo("#still10 .fade",{opacity:0},{opacity:1,duration:0.7,ease:"power1.inOut"},23.8);
+tl.fromTo("#still10 .kb",{scale:1.1,xPercent:0},{scale:1.02,xPercent:0,duration:3.6,ease:"none"},23.8);
+tl.fromTo("#sub11 span",{opacity:0,y:8},{opacity:1,y:0,duration:.35,ease:"power2.out"},21.15);
+tl.to("#sub11 span",{opacity:0,duration:.3},26.02);
+tl.fromTo("#unfoldA",{opacity:0,y:0},{opacity:1,y:0,duration:0.5,ease:"power3.out"},27.20);
+tl.to("#unfoldA",{opacity:0,duration:.6,ease:"power2.in"},29.60);
+tl.fromTo("#unfoldA .push",{scale:1.0},{scale:1.08,duration:2.4,ease:"none"},27.2);
+tl.set("#devA",{zIndex:50},0);
+tl.fromTo("#devA",{opacity:0,y:60,scale:0.94},{opacity:1,y:0,scale:1,duration:1.3,ease:"power3.out"},29.50);
+tl.to("#devA",{opacity:0,duration:.6,ease:"power2.in"},55.80);
+tl.set("#camA",{zIndex:50},0);
+tl.fromTo("#camA",{opacity:0,y:40},{opacity:1,y:0,duration:1.0,ease:"power3.out"},30.00);
+tl.to("#camA",{opacity:0,duration:.6,ease:"power2.in"},55.80);
+tl.fromTo("#headA0",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},29.90);
+tl.to("#headA0",{opacity:0,duration:0.6,ease:"power2.in"},36.20);
+tl.fromTo("#headA1",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},36.70);
+tl.to("#headA1",{opacity:0,duration:0.6,ease:"power2.in"},41.40);
+tl.fromTo("#headA2",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},41.90);
+tl.to("#headA2",{opacity:0,duration:0.6,ease:"power2.in"},55.80);
+tl.fromTo("#w0",{opacity:0,y:30,filter:"blur(10px)"},{opacity:1,y:0,filter:"blur(0px)",duration:.7,ease:"power3.out"},39.37);
+tl.fromTo("#w1",{opacity:0,y:30,filter:"blur(10px)"},{opacity:1,y:0,filter:"blur(0px)",duration:.7,ease:"power3.out"},49.32);
+tl.fromTo("#w2",{opacity:0,y:30,filter:"blur(10px)"},{opacity:1,y:0,filter:"blur(0px)",duration:.7,ease:"power3.out"},54.70);
+tl.to("#echoA",{opacity:0,duration:.5},55.70);
+tl.fromTo("#title23 .t",{opacity:0,y:24,filter:"blur(12px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.1,ease:"power3.out"},56.05);
+tl.to("#title23 .t",{opacity:0,duration:.5,ease:"power2.in"},57.70);
+tl.fromTo("#rotA",{opacity:0,y:0},{opacity:1,y:0,duration:0.5,ease:"power3.out"},58.00);
+tl.to("#rotA",{opacity:0,duration:.6,ease:"power2.in"},63.00);
+tl.fromTo("#rotA .push",{scale:1.0},{scale:1.04,duration:5.0,ease:"none"},58.0);
+tl.fromTo("#rotCap1",{opacity:0,y:16},{opacity:1,y:0,duration:0.9,ease:"power3.out"},58.30);
+tl.to("#rotCap1",{opacity:0,duration:0.6,ease:"power2.in"},62.60);
+tl.fromTo("#rotCap2",{opacity:0,y:16},{opacity:1,y:0,duration:0.9,ease:"power3.out"},60.20);
+tl.to("#rotCap2",{opacity:0,duration:0.6,ease:"power2.in"},62.60);
+tl.fromTo("#still25 .fade",{opacity:0},{opacity:1,duration:0.6,ease:"power1.inOut"},63.0);
+tl.fromTo("#still25 .kb",{scale:1.03,xPercent:0},{scale:1.1,xPercent:0,duration:3.2,ease:"none"},63.0);
+tl.set("#cheerA",{zIndex:60},0);
+tl.fromTo("#cheerA",{opacity:0,y:30,scale:1.04},{opacity:1,y:0,scale:1,duration:0.8,ease:"power3.out"},66.00);
+tl.to("#cheerA",{opacity:0,duration:.6,ease:"power2.in"},69.00);
+tl.fromTo("#cheerCap",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},66.60);
+tl.to("#cheerCap",{opacity:0,duration:0.6,ease:"power2.in"},69.00);
+tl.fromTo("#endRing",{opacity:0,y:30,scale:0.8},{opacity:1,y:0,scale:1,duration:1.4,ease:"power3.out"},69.60);
+tl.fromTo("#endWord",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},69.90);
+tl.fromTo("#endTag",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},71.50);
+tl.fromTo("#endTag2",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},74.20);
+tl.fromTo("#endFoot",{opacity:0,y:10},{opacity:1,y:0,duration:0.9,ease:"power3.out"},75.00);
+tl.fromTo("#black27 .fade",{opacity:0},{opacity:1,duration:0.5,ease:"power1.inOut"},12.20);
+window.__timelines["look"] = tl;
+</script>
+</body>
+</html>

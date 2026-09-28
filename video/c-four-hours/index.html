@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1920, height=1080" />
+<title>Iris · Four hours</title>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+@font-face { font-family: "Inter"; src: url("assets/fonts/inter.woff2") format("woff2"); font-weight: 100 900; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+#root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #000;
+  font-family: "Inter", sans-serif; color: #f5f5f7; -webkit-font-smoothing: antialiased; }
+.clip { position: absolute; inset: 0; }
+.fade, .kb { position: absolute; inset: 0; }
+.fade { opacity: 0; }
+.kb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shade { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(0,0,0,0) 40%, rgba(0,0,0,.55) 100%); }
+.shade-b { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0) 55%, rgba(0,0,0,.7) 100%); }
+.sub { display: flex; align-items: flex-end; justify-content: center; padding-bottom: 64px; pointer-events: none; z-index: 60; }
+.sub span { display: block; max-width: 1300px; text-align: center; font-size: 34px; font-weight: 500; line-height: 1.3;
+  letter-spacing: -0.01em; color: rgba(255,255,255,.95); text-shadow: 0 1px 10px rgba(0,0,0,.5); opacity: 0;
+  background: rgba(0,0,0,.42); padding: 8px 22px; border-radius: 14px; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.title { display: flex; align-items: center; justify-content: center; z-index: 40; }
+.title .t { display: block; opacity: 0; text-align: center; font-weight: 600; letter-spacing: -0.045em; line-height: 1.02; }
+.grad { background: linear-gradient(180deg, #ffffff 0%, #c9cff9 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.eyebrow { font-size: 26px; font-weight: 500; letter-spacing: 0.01em; color: #a1a1a6; }
+.layer { position: absolute; opacity: 0; }
+.device { border-radius: 64px; padding: 14px; background: linear-gradient(145deg, #3a3a3e 0%, #121214 45%, #2b2b2f 100%);
+  box-shadow: 0 0 0 1.5px #4a4a50 inset, 0 40px 120px rgba(0,0,0,.6), 0 0 160px rgba(120,130,255,.10); }
+.screen { position: relative; width: 100%; height: 100%; border-radius: 50px; overflow: hidden; background: #fff; }
+.screen video { position: absolute; top: -0.6%; left: -0.6%; width: 101.2%; height: 101.2%; object-fit: cover; }
+.cam { border-radius: 26px; overflow: hidden; background: #111; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+.cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cam-label { position: absolute; left: 18px; bottom: 16px; display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 500;
+  color: #fff; background: rgba(0,0,0,.45); padding: 7px 14px; border-radius: 999px; z-index: 2; }
+.cam-label i { display: block; width: 10px; height: 10px; border-radius: 50%; background: #ff453a; }
+.grain { position: absolute; inset: -50%; z-index: 90; pointer-events: none; opacity: .07; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="fourhours" data-start="0" data-duration="45.05" data-width="1920" data-height="1080">
+<audio id="vo-c1" src="assets/vo/c1.mp3" data-start="0.40" data-duration="3.03" data-track-index="8" data-volume="1.25"></audio>
+<div id="title1" class="clip title" data-start="0.45" data-duration="2.00" data-track-index="4" style="z-index:42"><div class="t" style="font-size:180px;"><span class="grad">Four hours.</span></div></div>
+<div id="title2" class="clip title" data-start="2.45" data-duration="1.60" data-track-index="4" style="z-index:42"><div class="t" style="font-size:180px;"><span class="grad">One question.</span></div></div>
+<div id="still3" class="clip" data-start="3.9" data-duration="5.6" data-track-index="1" style="z-index:2"><div class="fade"><div class="kb"><img src="assets/img/gaze_portrait.png" alt="" style="object-position:center"></div><div class="shade"></div></div></div>
+<audio id="vo-c2" src="assets/vo/c2.mp3" data-start="4.10" data-duration="5.51" data-track-index="8" data-volume="1.25"></audio>
+<div id="sub4" class="clip sub" data-start="4.15" data-duration="5.86" data-track-index="5"><span>What if someone with ALS could type with nothing but their eyes, on a phone?</span></div>
+<div id="still5" class="clip" data-start="9.3" data-duration="3.4" data-track-index="1" style="z-index:3"><div class="fade"><div class="kb"><img src="assets/img/duo_hero.png" alt="" style="object-position:center"></div><div class="shade"></div></div></div>
+<audio id="vo-c3" src="assets/vo/c3.mp3" data-start="9.60" data-duration="2.63" data-track-index="8" data-volume="1.25"></audio>
+<div id="meetC" class="layer" style="left:150px;top:400px;width:440px;z-index:45"><div class="grad" style="font-size:150px;font-weight:700;letter-spacing:-0.055em;line-height:1">Iris</div><div style="font-size:44px;font-weight:600;letter-spacing:-0.02em;color:#86868b;margin-top:14px">for iPhone Duo</div></div>
+<div id="black6" class="clip" data-start="12.50" data-duration="40.00" data-track-index="3" style="z-index:30"><div class="fade" style="background:#000"></div></div>
+<audio id="vo-c4" src="assets/vo/c4.mp3" data-start="12.80" data-duration="3.27" data-track-index="8" data-volume="1.25"></audio>
+<div id="devC" class="layer device" style="left:1030px;top:84px;width:640px;height:912px;border-radius:64px;padding:14px"><div class="screen"><video id="v7" src="assets/clips/screen.mp4" data-start="12.600" data-duration="5.000" data-media-start="8.000" data-playback-rate="10" data-track-index="2" muted playsinline></video><video id="v9" src="assets/clips/screen.mp4" data-start="17.600" data-duration="4.800" data-media-start="93.800" data-playback-rate="1.5" data-track-index="2" muted playsinline></video><video id="v10" src="assets/clips/screen.mp4" data-start="22.400" data-duration="3.000" data-media-start="101.500" data-playback-rate="1.25" data-track-index="2" muted playsinline></video><video id="v11" src="assets/clips/screen.mp4" data-start="25.400" data-duration="3.400" data-media-start="108.000" data-playback-rate="1.9" data-track-index="2" muted playsinline></video><video id="v12" src="assets/clips/screen.mp4" data-start="28.800" data-duration="5.600" data-media-start="117.400" data-playback-rate="1.0" data-track-index="2" muted playsinline></video></div></div>
+<div id="camC" class="layer cam" style="left:150px;top:790px;width:400px;height:224px"><video id="v8" src="assets/clips/face.mp4" data-start="12.600" data-duration="5.000" data-media-start="8.000" data-playback-rate="10" data-track-index="2" muted playsinline></video><video id="v13" src="assets/clips/face.mp4" data-start="17.600" data-duration="4.800" data-media-start="93.800" data-playback-rate="1.5" data-track-index="2" muted playsinline></video><video id="v14" src="assets/clips/face.mp4" data-start="22.400" data-duration="3.000" data-media-start="101.500" data-playback-rate="1.25" data-track-index="2" muted playsinline></video><video id="v15" src="assets/clips/face.mp4" data-start="25.400" data-duration="3.400" data-media-start="108.000" data-playback-rate="1.9" data-track-index="2" muted playsinline></video><video id="v16" src="assets/clips/face.mp4" data-start="28.800" data-duration="5.600" data-media-start="117.400" data-playback-rate="1.0" data-track-index="2" muted playsinline></video><div class="cam-label"><i></i>Webcam gaze</div></div>
+<div id="c16" class="layer" style="left:150px;top:220px;width:760px;z-index:51"><div class="grad" style="font-size:220px;font-weight:700;letter-spacing:-0.06em;line-height:1">16</div><div style="font-size:40px;font-weight:600;letter-spacing:-0.02em;color:#86868b;margin-top:10px">glances to calibrate</div></div>
+<audio id="vo-c5" src="assets/vo/c5.mp3" data-start="17.70" data-duration="4.72" data-track-index="8" data-volume="1.25"></audio>
+<div id="featC0" class="layer" style="left:150px;top:220px;width:820px;z-index:51"><div style="font-size:72px;font-weight:700;letter-spacing:-0.045em;line-height:1.1;white-space:nowrap" class="grad">Big keys.</div></div>
+<div id="featC1" class="layer" style="left:150px;top:320px;width:820px;z-index:51"><div style="font-size:72px;font-weight:700;letter-spacing:-0.045em;line-height:1.1;white-space:nowrap" class="grad">Grouped letters.</div></div>
+<div id="featC2" class="layer" style="left:150px;top:420px;width:820px;z-index:51"><div style="font-size:72px;font-weight:700;letter-spacing:-0.045em;line-height:1.1;white-space:nowrap" class="grad">Hold your gaze to select.</div></div>
+<audio id="vo-c6" src="assets/vo/c6.mp3" data-start="22.70" data-duration="3.91" data-track-index="8" data-volume="1.25"></audio>
+<div id="predC" class="layer" style="left:150px;top:220px;width:820px;z-index:51"><div style="font-size:40px;font-weight:600;letter-spacing:-0.02em;color:#86868b;margin-top:10px;margin:0 0 18px">Word prediction</div><div class="grad" style="font-size:84px;font-weight:700;letter-spacing:-0.045em;line-height:1.08">A few glances. Whole words.</div></div>
+<audio id="vo-c7" src="assets/vo/c7.mp3" data-start="29.10" data-duration="1.67" data-track-index="8" data-volume="1.25"></audio>
+<div id="testC" class="layer" style="left:150px;top:470px;width:820px;z-index:51"><div style="font-size:40px;font-weight:600;letter-spacing:-0.02em;color:#86868b;margin-top:10px;margin:0 0 18px">Three words to test it</div></div>
+<div id="echoC" class="layer" style="left:150px;top:560px;width:860px;z-index:51;opacity:1;font-size:120px;font-weight:700;letter-spacing:-0.055em;white-space:nowrap"><span id="cw0" class="grad" style="display:inline-block;opacity:0">I</span> <span id="cw1" class="grad" style="display:inline-block;opacity:0">love</span> <span id="cw2" class="grad" style="display:inline-block;opacity:0">you</span></div>
+<div id="title17" class="clip title" data-start="33.65" data-duration="2.40" data-track-index="4" style="z-index:55"><div class="t" style="font-size:180px;"><span class="grad">I love you.</span></div></div>
+<audio id="vo-app_love" src="assets/vo/app_love.mp3" data-start="34.10" data-duration="1.11" data-track-index="8" data-volume="1.4"></audio>
+<div id="cheerC" class="layer cam" style="left:320px;top:181px;width:1280px;height:718px"><video id="v18" src="assets/clips/face.mp4" data-start="35.850" data-duration="3.800" data-media-start="122.100" data-playback-rate="1.0" data-track-index="2" muted playsinline></video></div>
+<div id="cheerCapC" class="layer" style="left:0;right:0;top:930px;text-align:center;font-size:30px;font-weight:500;color:#a1a1a6;z-index:57">First try. Eyes only.</div>
+<div id="endRing" class="layer" style="left:840px;top:180px;width:240px;height:240px;z-index:58"><img src="assets/img/glass_iris.png" style="width:360px;height:240px;object-fit:cover;margin-left:-60px;display:block;border-radius:50%"></div>
+<div id="endWord" class="layer" style="left:0;right:0;top:450px;text-align:center;font-size:140px;font-weight:600;letter-spacing:-0.05em;z-index:58"><span class="grad">Iris</span></div>
+<div id="endTag" class="layer" style="left:0;right:0;top:640px;text-align:center;font-size:44px;font-weight:500;letter-spacing:-0.02em;color:#d2d2d7;z-index:58">Built at Bitrig Hacks.</div>
+<div id="endFoot" class="layer" style="left:40px;right:40px;top:960px;text-align:center;font-size:24px;font-weight:500;color:#6e6e73;z-index:58">Eye-typing for ALS on iPhone Duo  ·  Built in 4 hours</div>
+<audio id="vo-c8" src="assets/vo/c8.mp3" data-start="39.55" data-duration="3.99" data-track-index="8" data-volume="1.25"></audio>
+<audio id="musicC" src="assets/music/bed_c.wav" data-start="0" data-duration="45.05" data-track-index="9" data-volume="1" data-automation='{"version": 1, "lanes": [{"target": "volume", "points": [{"t": 0, "v": 0.3}, {"t": 29.4, "v": 0.3}, {"t": 30.4, "v": 0.45}, {"t": 33.949999999999996, "v": 0.45}, {"t": 34.1, "v": 0.18}, {"t": 35.35, "v": 0.18}, {"t": 36.050000000000004, "v": 0.5}, {"t": 39.75, "v": 0.34}, {"t": 45.05, "v": 0.34}]}]}' data-fade-out="2.5"></audio>
+<div class="grain"></div>
+</div>
+<script>
+const tl = gsap.timeline({ paused: true });
+tl.fromTo("#title1 .t",{opacity:0,y:24,filter:"blur(12px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.1,ease:"power3.out"},0.50);
+tl.to("#title1 .t",{opacity:0,duration:.5,ease:"power2.in"},1.95);
+tl.fromTo("#title2 .t",{opacity:0,y:24,filter:"blur(12px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.1,ease:"power3.out"},2.50);
+tl.to("#title2 .t",{opacity:0,duration:.5,ease:"power2.in"},3.55);
+tl.fromTo("#still3 .fade",{opacity:0},{opacity:1,duration:0.7,ease:"power1.inOut"},3.9);
+tl.fromTo("#still3 .kb",{scale:1.05,xPercent:0},{scale:1.14,xPercent:-2,duration:5.6,ease:"none"},3.9);
+tl.fromTo("#sub4 span",{opacity:0,y:8},{opacity:1,y:0,duration:.35,ease:"power2.out"},4.15);
+tl.to("#sub4 span",{opacity:0,duration:.3},9.71);
+tl.fromTo("#still5 .fade",{opacity:0},{opacity:1,duration:0.6,ease:"power1.inOut"},9.3);
+tl.fromTo("#still5 .kb",{scale:1.14,xPercent:0},{scale:1.04,xPercent:0,duration:3.4,ease:"none"},9.3);
+tl.fromTo("#meetC",{opacity:0,y:30},{opacity:1,y:0,duration:0.8,ease:"power3.out"},10.20);
+tl.to("#meetC",{opacity:0,duration:0.6,ease:"power2.in"},12.40);
+tl.fromTo("#black6 .fade",{opacity:0},{opacity:1,duration:0.35,ease:"power1.inOut"},12.50);
+tl.set("#devC",{zIndex:50},0);
+tl.fromTo("#devC",{opacity:0,y:60,scale:0.94},{opacity:1,y:0,scale:1,duration:0.9,ease:"power3.out"},12.60);
+tl.to("#devC",{opacity:0,duration:.6,ease:"power2.in"},33.50);
+tl.set("#camC",{zIndex:52},0);
+tl.fromTo("#camC",{opacity:0,y:40},{opacity:1,y:0,duration:1.0,ease:"power3.out"},13.00);
+tl.to("#camC",{opacity:0,duration:.6,ease:"power2.in"},33.50);
+tl.fromTo("#c16",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},12.90);
+tl.to("#c16",{opacity:0,duration:0.6,ease:"power2.in"},17.30);
+tl.fromTo("#featC0",{opacity:0,y:24},{opacity:1,y:0,duration:0.6,ease:"power3.out"},17.86);
+tl.to("#featC0",{opacity:0,duration:0.6,ease:"power2.in"},22.60);
+tl.fromTo("#featC1",{opacity:0,y:24},{opacity:1,y:0,duration:0.6,ease:"power3.out"},19.18);
+tl.to("#featC1",{opacity:0,duration:0.6,ease:"power2.in"},22.60);
+tl.fromTo("#featC2",{opacity:0,y:24},{opacity:1,y:0,duration:0.6,ease:"power3.out"},20.69);
+tl.to("#featC2",{opacity:0,duration:0.6,ease:"power2.in"},22.60);
+tl.fromTo("#predC",{opacity:0,y:30},{opacity:1,y:0,duration:0.7,ease:"power3.out"},22.80);
+tl.to("#predC",{opacity:0,duration:0.6,ease:"power2.in"},28.60);
+tl.fromTo("#testC",{opacity:0,y:30},{opacity:1,y:0,duration:0.6,ease:"power3.out"},29.10);
+tl.to("#testC",{opacity:0,duration:0.6,ease:"power2.in"},33.50);
+tl.fromTo("#cw0",{opacity:0,y:30,filter:"blur(10px)"},{opacity:1,y:0,filter:"blur(0px)",duration:.6,ease:"power3.out"},20.40);
+tl.fromTo("#cw1",{opacity:0,y:30,filter:"blur(10px)"},{opacity:1,y:0,filter:"blur(0px)",duration:.6,ease:"power3.out"},28.29);
+tl.fromTo("#cw2",{opacity:0,y:30,filter:"blur(10px)"},{opacity:1,y:0,filter:"blur(0px)",duration:.6,ease:"power3.out"},32.90);
+tl.to("#echoC",{opacity:0,duration:.4},33.40);
+tl.fromTo("#title17 .t",{opacity:0,y:24,filter:"blur(12px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.1,ease:"power3.out"},33.70);
+tl.to("#title17 .t",{opacity:0,duration:.5,ease:"power2.in"},35.55);
+tl.set("#cheerC",{zIndex:56},0);
+tl.fromTo("#cheerC",{opacity:0,y:30,scale:1.04},{opacity:1,y:0,scale:1,duration:0.7,ease:"power3.out"},35.85);
+tl.to("#cheerC",{opacity:0,duration:.6,ease:"power2.in"},38.85);
+tl.fromTo("#cheerCapC",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},36.35);
+tl.to("#cheerCapC",{opacity:0,duration:0.6,ease:"power2.in"},38.85);
+tl.fromTo("#endRing",{opacity:0,y:30,scale:0.8},{opacity:1,y:0,scale:1,duration:1.4,ease:"power3.out"},39.45);
+tl.fromTo("#endWord",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},39.75);
+tl.fromTo("#endTag",{opacity:0,y:30},{opacity:1,y:0,duration:0.9,ease:"power3.out"},41.15);
+tl.fromTo("#endFoot",{opacity:0,y:10},{opacity:1,y:0,duration:0.9,ease:"power3.out"},41.85);
+window.__timelines["fourhours"] = tl;
+</script>
+</body>
+</html>
